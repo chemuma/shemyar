@@ -31,11 +31,10 @@ CHANNEL_ID = "@chemical_eng_uma"
 OPERATOR_GROUP_ID = -1002574996302
 ADMIN_IDS = [5701423397, 158893761]
 CARD_NUMBER = "6219-8619-2120-2437"
-DB_PATH = os.getenv("DB_PATH", "/app/data/shemyar_bot.db")
+DB_PATH = "chemeng_bot.db"
 
 def init_db():
-    os.makedirs("/app/data", exist_ok=True) 
-    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
         c.execute("""
             CREATE TABLE IF NOT EXISTS users (
