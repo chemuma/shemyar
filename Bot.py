@@ -31,7 +31,7 @@ CHANNEL_ID = "@chemical_eng_uma"
 OPERATOR_GROUP_ID = -1002574996302
 ADMIN_IDS = [5701423397, 158893761]
 CARD_NUMBER = "6219-8619-2120-2437"
-DB_PATH = "chemeng_bot.db"
+DB_PATH = os.getenv("DB_PATH", "/app/data/shemyar_bot.db")
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
