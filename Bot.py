@@ -317,18 +317,27 @@ async def confirm_student_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message.contact:
         phone = update.message.contact.phone_number
-        phone = phone.replace("+98", "0") if phone.startswith("+98") else phone
+        if phone.startswith("+98"):
+            phone = "0" + phone[3:]
+        phone = re.sub(r"\D", "", phone)
+        if phone.startswith("98"):
+            phone = "0" + phone[2:]
     else:
-        phone = update.message.text
-        if not re.match(r"^09\d{9}$", phone):
-            await update.message.reply_text("شماره تماس باید 11 رقم و با 09 شروع شود. دوباره وارد کنید:")
-            return PHONE
+        phone = update.message.text.strip()
+        phone = re.sub(r"\D", "", phone)
+        if phone.startswith("98"):
+            phone = "0" + phone[2:]
+
+    if not re.match(r"^09\d{9}$", phone):
+        await update.message.reply_text("شماره تماس باید 11 رقم و با 09 شروع شود. دوباره وارد کنید:")
+        return PHONE
+
     context.user_data["phone"] = phone
     await update.message.reply_text(
         f"آیا شماره تماس زیر درست است؟\n{phone}",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("بله ✅", callback_data="confirm_phone"),
-            InlineKeyboardButton("خیر ✏️", callback_data="retry_phone")
+            InlineKeyboardButton("بله", callback_data="confirm_phone"),
+            InlineKeyboardButton("خیر", callback_data="retry_phone")
         ]])
     )
     return CONFIRM_PHONE
@@ -467,18 +476,9 @@ async def edit_profile_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return EDIT_PROFILE_VALUE
             c.execute("UPDATE users SET student_id = ? WHERE user_id = ?", (text, user_id))
         elif field == "edit_phone":
-            if update.message.contact:
+             if update.message.contact:
                 phone = update.message.contact.phone_number
-                if phone.startswith("+98"):
-                    phone = "0" + phone[3:]
-                phone = re.sub(r"\D", "", phone)
-                if phone.startswith("98"):
-                    phone = "0" + phone[2:]
-            else:
-                phone = update.message.text.strip()
-                phone = re.sub(r"\D", "", phone)
-                if phone.startswith("98"):
-                    phone = "0" + phone[2:]
+                phone = phone.replace("+98", "0") if phone.startswith("+98") else phone
             else:
                 phone = update.message.text
             if not re.match(r"^09\d{9}$", phone):
