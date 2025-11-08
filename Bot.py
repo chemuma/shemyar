@@ -476,7 +476,7 @@ async def edit_profile_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return EDIT_PROFILE_VALUE
             c.execute("UPDATE users SET student_id = ? WHERE user_id = ?", (text, user_id))
         elif field == "edit_phone":
-             if update.message.contact:
+            if update.message.contact:
                 phone = update.message.contact.phone_number
                 phone = phone.replace("+98", "0") if phone.startswith("+98") else phone
             else:
