@@ -158,7 +158,7 @@ async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT
 
 def get_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
     buttons = [
-        ["دوره‌ها/بازدیدها", ✏️],
+        ["دوره ها/ بازدید ها ✏️"],
         ["پروفایل من 😎 📅", "ویرایش مشخصات "],
         ["ارتباط با پشتیبانی 📞", "سوالات متداول ❓"],
         ["لغو/شروع دوباره 🚪"]
