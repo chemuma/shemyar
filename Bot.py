@@ -32,6 +32,7 @@ OPERATOR_GROUP_ID = -1002574996302
 ADMIN_IDS = [5701423397, 158893761]
 CARD_NUMBER = "6219-8619-2120-2437"
 DB_PATH = "chemeng_bot.db"
+RATING_DEADLINE_HOURS = 24
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -100,6 +101,20 @@ def init_db():
                 sent_at TEXT
             )
         """)
+        c.execute("""
+          CREATE TABLE IF NOT EXISTS ratings (
+              rating_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER,
+              event_id INTEGER,
+              score INTEGER CHECK(score BETWEEN 1 AND 5),
+              rated_at TEXT,
+              UNIQUE(user_id, event_id),
+              FOREIGN KEY(user_id) REFERENCES users(user_id),
+              FOREIGN KEY(event_id) REFERENCES events(event_id)
+          )
+      """)
+      c.execute("ALTER TABLE events ADD COLUMN rating_sent INTEGER DEFAULT 0")
+      c.execute("ALTER TABLE events ADD COLUMN rating_deadline TEXT")
         conn.commit()
 
 # States for conversation handlers
@@ -112,6 +127,7 @@ ANNOUNCE_GROUP, ANNOUNCE_MESSAGE = range(2)
 ADD_ADMIN, REMOVE_ADMIN = range(2)
 MANUAL_REG_EVENT, MANUAL_REG_STUDENT_ID, CONFIRM_MANUAL_REG = range(3)
 REPORT_TYPE, REPORT_PERIOD = range(2)
+SEND_RATING_EVENT = 0
 
 # Utility functions
 def validate_national_id(national_id: str) -> bool:
@@ -155,6 +171,7 @@ def get_admin_menu() -> ReplyKeyboardMarkup:
         ["اضافه کردن رویداد جدید ➕", "تغییر رویداد فعال ✏️"],
         ["غیرفعال/فعال کردن رویداد 🔄", "مدیریت ادمین‌ها 👤"],
         ["اعلان عمومی 📢", "گزارش‌ها 📊"],
+        ["ارسال فرم امتیاز 🌟"],
         ["اضافه کردن دستی به ثبت‌نام 📋"],
         ["لغو/شروع دوباره 🚪"],
         ["بازگشت 🔙"]
@@ -1493,7 +1510,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif period == "month":
             start_date = (now - timedelta(days=30)).isoformat()
         else:
-            start_date = "1970-01-01T00:00:00"
+            start_date = "1402-01-01T00:00:00"
         with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
             c.execute(
@@ -1524,6 +1541,156 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text(text, reply_markup=get_admin_menu())
         await query.message.delete()
         return ConversationHandler.END
+        
+async def send_rating_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS and not get_admin_info(user_id):
+        await update.message.reply_text("شما دسترسی ادمین ندارید! 🚫")
+        return ConversationHandler.END
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT event_id, title, type, hashtag 
+            FROM events 
+            WHERE is_active = 0 AND rating_sent = 0
+        """)
+        events = c.fetchall()
+
+    if not events:
+        await update.message.reply_text("هیچ رویدادی برای ارسال فرم امتیاز یافت نشد.")
+        return ConversationHandler.END
+
+    buttons = [
+        [InlineKeyboardButton(f"{e[1]} ({e[2]})", callback_data=f"send_rating_{e[0]}")]
+        for e in events
+    ]
+    await update.message.reply_text(
+        "رویداد مورد نظر برای ارسال فرم امتیاز را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return SEND_RATING_EVENT
+
+async def send_rating_to_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    event_id = int(query.data.split("_")[2])
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT title, type, hashtag FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+        c.execute("SELECT user_id FROM registrations WHERE event_id = ?", (event_id,))
+        users = [row[0] for row in c.fetchall()]
+
+    deadline = datetime.now() + timedelta(hours=RATING_DEADLINE_HOURS)
+    deadline_str = deadline.strftime("%H:%M - %Y/%m/%d")
+
+    sent_count = 0
+    for user_id in users:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("1⭐", callback_data=f"rate_{event_id}_1"),
+            InlineKeyboardButton("2⭐", callback_data=f"rate_{event_id}_2"),
+            InlineKeyboardButton("3⭐", callback_data=f"rate_{event_id}_3"),
+            InlineKeyboardButton("4⭐", callback_data=f"rate_{event_id}_4"),
+            InlineKeyboardButton("5⭐", callback_data=f"rate_{event_id}_5"),
+        ]])
+
+        try:
+            await context.bot.send_message(
+                user_id,
+                f"{full_name} ، امروز چطور بود؟؟؟!"
+                f"🌟 *نظرت درباره‌ی {event[0]} چیه؟*\n\n"
+                f"#{event[1]} #{event[2].replace(' ', '_')}\n\n"
+                f"لطفاً تا ۲۴ ساعت آینده (تا ساعت {deadline_str}) امتیازت رو ثبت کن:\n"
+                f"ممنون از شرکتت در این رویداد! 💚",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            sent_count += 1
+        except Exception as e:
+            logger.warning(f"Could not send rating form to {user_id}: {e}")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE events SET rating_sent = 1, rating_deadline = ? WHERE event_id = ?",
+            (deadline.isoformat(), event_id)
+        )
+        conn.commit()
+
+    await query.message.reply_text(
+        f"✅ فرم امتیازدهی با موفقیت برای {sent_count} کاربران ارسال شد.\n"
+        f"مهلت: تا {deadline_str}"
+    )
+    return ConversationHandler.END
+
+async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split("_")
+    if len(parts) != 3 or parts[0] != "rate":
+        return
+
+    event_id = int(parts[1])
+    score = int(parts[2])
+    user_id = update.effective_user.id
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT rating_deadline, rating_sent FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+
+    if not event or not event[1]:
+        await query.message.edit_text("❌ این فرم امتیازدهی ارسال نشده است.")
+        return
+
+    if event[0] and datetime.fromisoformat(event[0]) < datetime.now():
+        await query.message.edit_text("⏰ مهلت امتیازدهی به پایان رسیده است.")
+        return
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        try:
+            c.execute(
+                "INSERT INTO ratings (user_id, event_id, score, rated_at) VALUES (?, ?, ?, ?)",
+                (user_id, event_id, score, datetime.now().isoformat())
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            await query.message.edit_text("شما قبلاً امتیاز داده‌اید.")
+            return
+
+    await query.message.edit_text(
+        f"✅ امتیاز شما ({'⭐' * score}) با موفقیت ثبت شد!\n\n"
+        f"ممنون از نظرت 💚"
+    )
+
+async def send_rating_average(context: ContextTypes.DEFAULT_TYPE):
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT event_id, title, type, hashtag, rating_deadline
+            FROM events
+            WHERE rating_sent = 1 AND rating_deadline < ?
+        """, (datetime.now().isoformat(),))
+        expired_events = c.fetchall()
+
+    for event in expired_events:
+        event_id = event[0]
+        c.execute("SELECT AVG(score), COUNT(*) FROM ratings WHERE event_id = ?", (event_id,))
+        avg, count = c.fetchone()
+        if avg is None:
+            continue
+
+        avg = round(avg, 2)
+        text = (
+            f"#امتیاز\n"
+            f"کاربران به رویداد #{event[2]} #{event[3].replace(' ', '_')}:\n"
+            f"میانگین: {avg} ⭐ از {count} نفر"
+        )
+        await context.bot.send_message(OPERATOR_GROUP_ID, text)
 
 async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -1572,6 +1739,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 def main() -> None:
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
+    app.job_queue.run_repeating(send_rating_average, interval=3600, first=60)
 
     # ConversationHandler برای profile_conv
     profile_conv = ConversationHandler(
@@ -1697,6 +1865,15 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
         per_message=False
     )
+    #ConversationHandler برای send_rating_conv
+    send_rating_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(ارسال فرم امتیاز 🌟)$"), send_rating_start)],
+        states={
+            SEND_RATING_EVENT: [CallbackQueryHandler(send_rating_to_event, pattern="^send_rating_")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
 
     # ثبت هندلرها
     app.add_handler(profile_conv)
@@ -1708,6 +1885,7 @@ def main() -> None:
     app.add_handler(manage_admins_conv)
     app.add_handler(manual_reg_conv)
     app.add_handler(report_conv)
+    app.add_handler(send_rating_conv)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Regex("^(دوره‌ها/بازدیدها 📅)$"), show_events))
     app.add_handler(MessageHandler(filters.Regex("^(ارتباط با پشتیبانی 📞)$"), handle_support_message))
@@ -1721,7 +1899,8 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_payment_receipt))
     app.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
     app.add_handler(CallbackQueryHandler(show_events, pattern="^back_to_events$"))
-
+    app.add_handler(CallbackQueryHandler(handle_rating, pattern="^rate_"))
+    
     logger.info("Bot is starting...")
     app.run_polling()
 
