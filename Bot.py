@@ -283,6 +283,10 @@ async def student_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not re.match(r"^\d+$", text):
         await update.message.reply_text("شماره دانشجویی باید فقط شامل اعداد باشد. دوباره وارد کنید:")
         return STUDENT_ID
+
+    if "44" not in text:
+        await update.message.reply_text("متاسفانه این کد دانشجویی مجاز به ثبت نام نیست😓 کد دانشجویی دیگری وارد کنید.")
+        return STUDENT_ID
     context.user_data["student_id"] = text
     await update.message.reply_text(
         f"آیا شماره دانشجویی زیر درست است؟\n{text}",
@@ -465,7 +469,16 @@ async def edit_profile_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif field == "edit_phone":
             if update.message.contact:
                 phone = update.message.contact.phone_number
-                phone = phone.replace("+98", "0") if phone.startswith("+98") else phone
+                if phone.startswith("+98"):
+                    phone = "0" + phone[3:]
+                phone = re.sub(r"\D", "", phone)
+                if phone.startswith("98"):
+                    phone = "0" + phone[2:]
+            else:
+                phone = update.message.text.strip()
+                phone = re.sub(r"\D", "", phone)
+                if phone.startswith("98"):
+                    phone = "0" + phone[2:]
             else:
                 phone = update.message.text
             if not re.match(r"^09\d{9}$", phone):
