@@ -158,7 +158,8 @@ async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT
 
 def get_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
     buttons = [
-        ["دوره‌ها/بازدیدها 📅", "ویرایش مشخصات ✏️"],
+        ["دوره‌ها/بازدیدها", ✏️],
+        ["پروفایل من 😎 📅", "ویرایش مشخصات "],
         ["ارتباط با پشتیبانی 📞", "سوالات متداول ❓"],
         ["لغو/شروع دوباره 🚪"]
     ]
@@ -1735,6 +1736,143 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"{full_name} عزیز، به منوی اصلی بازگشتید.",
         reply_markup=get_main_menu(is_admin)
     )
+async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not await check_channel_membership(update, context):
+        await update.message.reply_text(
+            f"لطفاً ابتدا کانال رسمی را دنبال کنید: {CHANNEL_ID}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("عضو شدم", callback_data="check_membership")
+            ]])
+        )
+        return
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT e.event_id, e.title, e.type, e.date, e.is_active, e.deactivation_reason
+            FROM events e
+            JOIN registrations r ON e.event_id = r.event_id
+            WHERE r.user_id = ?
+            ORDER BY e.date DESC
+        """, (user_id,))
+        events = c.fetchall()
+
+    if not events:
+        await update.message.reply_text("شما در هیچ رویدادی ثبت‌نام نکرده‌اید.")
+        return
+
+    buttons = []
+    for event in events:
+        event_id, title, event_type, date_str, is_active, reason = event
+        date_obj = datetime.fromisoformat(date_str)
+        today = datetime.now().date()
+        event_date = date_obj.date()
+
+        # وضعیت رویداد
+        if not is_active:
+            status = "برگزار شده"
+        elif event_date > today:
+            status = "آینده"
+        elif event_date == today:
+            status = "در حال برگزاری"
+        else:
+            status = "برگزار شده"
+
+        # نمایش امتیاز
+        c.execute("SELECT score FROM ratings WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+        rating = c.fetchone()
+        rating_text = f"امتیاز شما: {'⭐' * rating[0]}" if rating else "امتیاز نداده‌اید"
+
+        # دکمه انصراف فقط برای آینده
+        if status == "آینده":
+            btn_text = f"{title} ({event_type}) - {status}\n{rating_text}"
+            buttons.append([InlineKeyboardButton(btn_text, callback_data=f"myevent_{event_id}")])
+        else:
+            btn_text = f"{title} ({event_type}) - {status}\n{rating_text}"
+            buttons.append([InlineKeyboardButton(btn_text, callback_data=f"myevent_{event_id}")])
+
+    await update.message.reply_text(
+        "رویدادهای من:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+async def my_event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    event_id = int(query.data.split("_")[1])
+    user_id = update.effective_user.id
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+        c.execute("SELECT score FROM ratings WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+        rating = c.fetchone()
+
+    if not event:
+        await query.message.edit_text("رویداد یافت نشد!")
+        return
+
+    date_obj = datetime.fromisoformat(event[3])
+    today = datetime.now().date()
+    event_date = date_obj.date()
+
+    if not event[8]:  # غیرفعال
+        status = f"برگزار شده"
+    elif event_date > today:
+        status = "آینده"
+    elif event_date == today:
+        status = "در حال برگزاری"
+    else:
+        status = "برگزار شده"
+
+    cost_text = "رایگان" if event[10] == 0 else f"{event[10]:,} تومان"
+    text = (
+        f"عنوان: {event[1]}\n"
+        f"نوع: {event[2]}\n"
+        f"تاریخ: {event[3]}\n"
+        f"محل: {event[4]}\n"
+        f"هزینه: {cost_text}\n"
+        f"وضعیت: {status}\n"
+        f"توضیحات: {event[7]}"
+    )
+
+    if rating:
+        text += f"\nامتیاز شما: {'⭐' * rating[0]}"
+
+    buttons = [[InlineKeyboardButton("بازگشت", callback_data="back_to_myprofile")]]
+
+    # فقط برای آینده
+    if status == "آینده":
+        buttons.append([InlineKeyboardButton("انصراف از ثبت‌نام", callback_data=f"cancel_reg_{event_id}")])
+
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    event_id = int(query.data.split("_")[2])
+    user_id = update.effective_user.id
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT is_active, current_capacity FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+
+    if not event or not event[0]:
+        await query.message.edit_text("این رویداد برگزار شده و قابل انصراف نیست.")
+        return
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+        c.execute("UPDATE events SET current_capacity = current_capacity - 1 WHERE event_id = ?", (event_id,))
+        conn.commit()
+
+    await query.message.edit_text("ثبت‌نام شما با موفقیت لغو شد!", reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("بازگشت به پروفایل", callback_data="back_to_myprofile")]
+    ]))
+    
 
 def main() -> None:
     init_db()
@@ -1900,6 +2038,10 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
     app.add_handler(CallbackQueryHandler(show_events, pattern="^back_to_events$"))
     app.add_handler(CallbackQueryHandler(handle_rating, pattern="^rate_"))
+    app.add_handler(MessageHandler(filters.Regex("^(پروفایل من)$"), my_profile))
+    app.add_handler(CallbackQueryHandler(my_event_detail, pattern="^myevent_"))
+    app.add_handler(CallbackQueryHandler(cancel_registration, pattern="^cancel_reg_"))
+    app.add_handler(CallbackQueryHandler(my_profile, pattern="^back_to_myprofile$"))
     
     logger.info("Bot is starting...")
     app.run_polling()
