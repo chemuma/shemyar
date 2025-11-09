@@ -33,6 +33,8 @@ ADMIN_IDS = [5701423397, 158893761]
 CARD_NUMBER = "6219-8619-2120-2437"
 DB_PATH = "chemeng_bot.db"
 RATING_DEADLINE_HOURS = 24
+USER_PHOTOS_GROUP_ID = -1003246645055
+MAX_PHOTOS = 3
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -128,6 +130,7 @@ ADD_ADMIN, REMOVE_ADMIN = range(2)
 MANUAL_REG_EVENT, MANUAL_REG_STUDENT_ID, CONFIRM_MANUAL_REG = range(3)
 REPORT_TYPE, REPORT_PERIOD = range(2)
 SEND_RATING_EVENT = 0
+PHOTO_UPLOAD_CONFIRM, PHOTO_UPLOAD = range(2)
 
 # Utility functions
 def validate_national_id(national_id: str) -> bool:
@@ -1677,8 +1680,13 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await query.message.edit_text(
-        f"✅ امتیاز شما ({'⭐' * score}) با موفقیت ثبت شد!\n\n"
-        f"ممنون از نظرت 💚"
+        f"امتیاز شما ({'⭐' * score}) با موفقیت ثبت شد!\n\n"
+        f"راستی اگه از این رویداد عکس یا ویدیو کوتاهی داری، خوشحال میشم برام بفرستی تا بعداً در تولید پوسترها یا ویدیوهای جذاب ازش استفاده کنیم.\n\n"
+        f"یادت باشه فقط {MAX_PHOTOS} تا می‌تونی بفرستی!",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("😃آره می‌خوام بفرستم", callback_data=f"upload_photo_{event_id}")],
+            [InlineKeyboardButton("😐نه چیزی نمی‌فرستم", callback_data="skip_photo")]
+        ])
     )
 
 async def send_rating_average(context: ContextTypes.DEFAULT_TYPE):
@@ -1705,6 +1713,107 @@ async def send_rating_average(context: ContextTypes.DEFAULT_TYPE):
             f"میانگین: {avg} ⭐ از {count} نفر"
         )
         await context.bot.send_message(OPERATOR_GROUP_ID, text)
+
+async def start_photo_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "skip_photo":
+        await query.message.edit_text("ممنون از شرکتت در نظرسنجی! موفق باشی!")
+        return ConversationHandler.END
+
+    event_id = int(query.data.split("_")[2])
+    context.user_data["photo_event_id"] = event_id
+    context.user_data["photo_count"] = 0
+
+    await query.message.edit_text(
+        f"عالی! حالا تا {MAX_PHOTOS} تا عکس یا ویدیو کوتاه بفرست.\n"
+        f"بعد از ارسال، دکمه «اتمام» رو بزن.\n\n"
+        f"تعداد ارسال شده: 0/{MAX_PHOTOS}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("اتمام", callback_data="finish_upload")]
+        ])
+    )
+    return PHOTO_UPLOAD
+
+async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    event_id = context.user_data.get("photo_event_id")
+    if not event_id:
+        return PHOTO_UPLOAD
+
+    count = context.user_data.get("photo_count", 0)
+    if count >= MAX_PHOTOS:
+        await update.message.reply_text("حداکثر ۳ فایل مجاز است!")
+        return PHOTO_UPLOAD
+
+    file = None
+    caption = ""
+    if update.message.photo:
+        file = update.message.photo[-1].file_id
+        caption = update.message.caption or ""
+    elif update.message.video:
+        file = update.message.video.file_id
+        caption = update.message.video_caption or ""
+
+    if not file:
+        return PHOTO_UPLOAD
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
+        user = c.fetchone()
+    full_name = user[0] if user else "کاربر"
+
+    try:
+        sent = await context.bot.forward_message(
+            chat_id=USER_PHOTOS_GROUP_ID,
+            from_chat_id=update.effective_chat.id,
+            message_id=update.message.message_id
+        )
+
+        await context.bot.edit_message_caption(
+            chat_id=USER_PHOTOS_GROUP_ID,
+            message_id=sent.message_id,
+            caption=f"{full_name} (@{update.effective_user.username or 'بدون نام کاربری'})\n{caption}"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to forward photo: {e}")
+
+    count += 1
+    context.user_data["photo_count"] = count
+
+    if count < MAX_PHOTOS:
+        await update.message.reply_text(
+            f"دریافت شد! ({count}/{MAX_PHOTOS})\n"
+            f"می‌تونی تا {MAX_PHOTOS - count} تای دیگه بفرستی.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("اتمام", callback_data="finish_upload")]
+            ])
+        )
+    else:
+        await update.message.reply_text(
+            f"حداکثر {MAX_PHOTOS} فایل دریافت شد!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("اتمام", callback_data="finish_upload")]
+            ])
+        )
+    return PHOTO_UPLOAD
+
+async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    count = context.user_data.get("photo_count", 0)
+    await query.message.edit_text(
+        f"ممنون از ارسال {count} فایل!\n"
+        f"عکس‌ها و ویدیوها با اسم شما در آرشیو ما ذخیره شد و ممکنه در پوسترها یا ویدیوهای آینده استفاده بشه.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("بازگشت به منوی اصلی", callback_data="back_to_main")]
+        ])
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
 
 async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -2025,7 +2134,25 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
         per_message=False
     )
+    #ConversationHandler برای photo_upload_conv
+    photo_upload_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_photo_upload, pattern="^(upload_photo_|skip_photo)$")
+        ],
+        states={
+            PHOTO_UPLOAD: [
+                MessageHandler(filters.PHOTO | filters.VIDEO, receive_photo),
+                CallbackQueryHandler(finish_upload, pattern="^finish_upload$")
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
 
+    app.add_handler(photo_upload_conv)
+
+
+    
     # ثبت هندلرها
     app.add_handler(profile_conv)
     app.add_handler(edit_profile_conv)
@@ -2055,6 +2182,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(my_event_detail, pattern="^myevent_"))
     app.add_handler(CallbackQueryHandler(cancel_registration, pattern="^cancel_reg_"))
     app.add_handler(CallbackQueryHandler(my_profile, pattern="^back_to_myprofile$"))
+    app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
     
     logger.info("Bot is starting...")
     app.run_polling()
