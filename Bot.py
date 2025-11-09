@@ -125,8 +125,13 @@ def init_db():
               FOREIGN KEY(event_id) REFERENCES events(event_id)
           )
       """)
-        c.execute("ALTER TABLE events ADD COLUMN rating_sent INTEGER DEFAULT 0")
-        c.execute("ALTER TABLE events ADD COLUMN rating_deadline TEXT")
+        c.execute("PRAGMA table_info(events)")
+        columns = [row[1] for row in c.fetchall()]
+
+        if "rating_sent" not in columns:
+            c.execute("ALTER TABLE events ADD COLUMN rating_sent INTEGER DEFAULT 0")
+        if "rating_deadline" not in columns:
+            c.execute("ALTER TABLE events ADD COLUMN rating_deadline TEXT")
         conn.commit()
 
 # States for conversation handlers
