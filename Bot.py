@@ -125,8 +125,13 @@ def init_db():
               FOREIGN KEY(event_id) REFERENCES events(event_id)
           )
       """)
-        c.execute("ALTER TABLE events ADD COLUMN rating_sent INTEGER DEFAULT 0")
-        c.execute("ALTER TABLE events ADD COLUMN rating_deadline TEXT")
+        
+        c.execute("PRAGMA table_info(events)")
+        columns = [row[1] for row in c.fetchall()]
+        if "rating_sent" not in columns:
+            c.execute("ALTER TABLE events ADD COLUMN rating_sent INTEGER DEFAULT 0")
+        if "rating_deadline" not in columns:
+            c.execute("ALTER TABLE events ADD COLUMN rating_deadline TEXT")
         conn.commit()
 
 # States for conversation handlers
@@ -2089,6 +2094,48 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.message.edit_text("ثبت‌نام شما با موفقیت لغو شد!", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("بازگشت به پروفایل", callback_data="back_to_myprofile")]
     ]))
+
+async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    event_id = context.user_data.get("pending_event_id")
+    if not event_id:
+        await update.message.reply_text("ابتدا در یک رویداد ثبت‌نام کنید.")
+        return
+
+    photo = update.message.photo[-1].file_id
+    caption = update.message.caption or ""
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT title, cost FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+        if not event:
+            return
+
+    # فوروارد به گروه اپراتورها
+    sent = await context.bot.forward_message(
+        chat_id=OPERATOR_GROUP_ID,
+        from_chat_id=update.effective_chat.id,
+        message_id=update.message.message_id
+    )
+
+    # دکمه‌های تأیید/رد
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅تایید", callback_data=f"confirm_payment_{event_id}_{user_id}"),
+            InlineKeyboardButton("❓نامشخص", callback_data=f"unclear_payment_{event_id}_{user_id}"),
+            InlineKeyboardButton("✖لغو", callback_data=f"cancel_payment_{event_id}_{user_id}")
+        ]
+    ])
+
+    await context.bot.edit_message_caption(
+        chat_id=OPERATOR_GROUP_ID,
+        message_id=sent.message_id,
+        caption=f"رسید پرداخت از کاربر {user_id}\nرویداد: {event[0]}\nمبلغ: {event[1]:,} تومان\n{caption}",
+        reply_markup=keyboard
+    )
+
+    await update.message.reply_text("رسید شما دریافت شد. در حال بررسی توسط اپراتورها...")
 
 
 def main() -> None:
