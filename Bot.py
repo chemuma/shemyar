@@ -15,6 +15,7 @@ from telegram.ext import (
 )
 from telegram import Update
 import uuid
+import asyncio
 
 # تنظیم لاگر اصلی
 logging.basicConfig(
@@ -474,6 +475,9 @@ async def edit_profile_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             c.execute("UPDATE users SET national_id = ? WHERE user_id = ?", (text, user_id))
         elif field == "edit_student_id":
             text = update.message.text
+            if "44" not in text:
+                await update.message.reply_text("متاسفانه این کد دانشجویی مجاز به ثبت نام نیست😓 کد دانشجویی دیگری وارد کنید.")
+                return EDIT_PROFILE_VALUE
             if not re.match(r"^\d+$", text):
                 await update.message.reply_text("شماره دانشجویی باید فقط شامل اعداد باشد. دوباره وارد کنید:")
                 return EDIT_PROFILE_VALUE
@@ -552,7 +556,6 @@ async def event_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     buttons = [
         [InlineKeyboardButton("ثبت‌نام ✅", callback_data=f"register_{event_id}")],
-        [InlineKeyboardButton("بازگشت 🔙", callback_data="back_to_events")]
     ]
     await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     await query.message.delete()
@@ -623,167 +626,77 @@ async def register_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await deactivate_event(event_id, "تکمیل ظرفیت", context)
     else:  # Paid event
         context.user_data["pending_event_id"] = event_id
-        await query.message.reply_text(
-            f"برای تکمیل ثبت‌نام در {event[1]}، لطفاً مبلغ {event[10]:,} تومان را به شماره کارت زیر واریز کنید:\n{CARD_NUMBER}\nلطفاً تصویر رسید پرداخت را ارسال کنید."
+
+        # --- یادآوری پرداخت 30 دقیقه بعد ---
+        context.job_queue.run_once(
+            lambda ctx: send_payment_reminder(ctx, user_id, event_id),
+            when=1800,  # 30 دقیقه
+            name=f"payment_reminder_{user_id}_{event_id}"
         )
 
-async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if "pending_event_id" not in context.user_data:
-        await update.message.reply_text("لطفاً ابتدا یک رویداد انتخاب کنید و فرآیند ثبت‌نام را آغاز کنید.")
-        return
-    event_id = context.user_data["pending_event_id"]
-    user_id = update.effective_user.id
+        await query.message.reply_text(
+            f"برای تکمیل ثبت‌نام در {event[1]}، لطفاً مبلغ {event[10]:,} تومان را به شماره کارت زیر واریز کنید:\n"
+            f"`{CARD_NUMBER}`\n\n"
+            f"لطفاً تصویر رسید پرداخت را ارسال کنید.\n"
+            f"یادآوری: ۳۰ دقیقه دیگر دوباره به شما اطلاع داده می‌شود.",
+            parse_mode="Markdown"
+        )
+
+async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    parts = data.split("_")
+    action = parts[0]
+    event_id = int(parts[1])
+    user_id = int(parts[2])
+    message_id = query.message.message_id
+
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
         c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
         event = c.fetchone()
-        c.execute("SELECT full_name, national_id, student_id, phone FROM users WHERE user_id = ?", (user_id,))
-        user = c.fetchone()
-    text = (
-        f"#{event[2]} #{event[9].replace(' ', '_')}\n"
-        f"نام: {user[0]}\n"
-        f"کد ملی: {user[1]}\n"
-        f"شماره دانشجویی: {user[2]}\n"
-        f"شماره تماس: {user[3]}\n"
-        f"مبلغ: {event[10]:,} تومان"
-    )
-    buttons = [
-        [InlineKeyboardButton("تأیید ✅", callback_data=f"confirm_payment_{user_id}_{event_id}")],
-        [
-            InlineKeyboardButton("ناخوانا 📸", callback_data=f"unclear_payment_{user_id}_{event_id}"),
-            InlineKeyboardButton("ابطال 🚫", callback_data=f"cancel_payment_{user_id}_{event_id}")
-        ]
-    ]
-    message = await context.bot.send_photo(
-        OPERATOR_GROUP_ID,
-        update.message.photo[-1].file_id,
-        caption=text,
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "payment", datetime.now().isoformat())
-        )
-        conn.commit()
-    await update.message.reply_text("رسید شما ارسال شد و در انتظار تأیید است. ✅")
-
-# تابع مدیریت اقدامات پرداخت
-async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    if update.effective_user.id not in ADMIN_IDS and not get_admin_info(update.effective_user.id):
-        await query.answer("فقط ادمین‌ها می‌توانند این اقدام را انجام دهند! 🚫", show_alert=True)
-        return
-
-    callback_parts = query.data.split("_")
-    if not callback_parts:
-        logger.error(f"Empty callback data: {query.data}")
-        await query.message.reply_text("خطایی رخ داد. داده دریافتی نامعتبر است.")
-        await query.message.delete()
-        return
-
-    action = callback_parts[0]
-
-    if action == "done":
-        await query.message.delete()
-        return
-
-    # مدیریت دکمه‌های مرحله دوم (تأیید نهایی)
-    if action == "confirm" and len(callback_parts) >= 5:
-        sub_action = callback_parts[1]
-        user_id = int(callback_parts[3])
-        event_id = int(callback_parts[4])
-
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
-            event = c.fetchone()
-            c.execute("SELECT full_name, national_id, student_id, phone FROM users WHERE user_id = ?", (user_id,))
-            user = c.fetchone()
-
-        if not event or not user:
-            logger.error(f"Event or user not found: event_id={event_id}, user_id={user_id}")
-            await query.message.reply_text("خطایی رخ داد. رویداد یا کاربر یافت نشد.")
-            await query.message.delete()
+        if not event:
+            await query.edit_message_caption(caption="رویداد یافت نشد! 🚫")
             return
 
-        if sub_action == "confirm_payment":
-            with sqlite3.connect(DB_PATH) as conn:
-                c = conn.cursor()
-                c.execute(
-                    "INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
-                    (user_id, event_id, datetime.now().isoformat())
-                )
-                c.execute(
-                    "INSERT INTO payments (user_id, event_id, amount, confirmed_at) VALUES (?, ?, ?, ?)",
-                    (user_id, event_id, event[10], datetime.now().isoformat())
-                )
-                c.execute(
-                    "UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?",
-                    (event_id,)
-                )
-                c.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,))
-                reg_count = c.fetchone()[0]
-                conn.commit()
-            hashtag = f"#{event[2]} #{event[9].replace(' ', '_')}"
-            text = (
-                f"{hashtag}, {reg_count}:\n"
-                f"نام: {user[0]}\n"
-                f"کد ملی: {user[1]}\n"
-                f"شماره دانشجویی: {user[2]}\n"
-                f"شماره تماس: {user[3]}"
+    if action == "confirm_payment":
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO payments (user_id, event_id, amount, confirmed_at) VALUES (?, ?, ?, ?)",
+                (user_id, event_id, event[10], datetime.now().isoformat())
             )
-            message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
-            with sqlite3.connect(DB_PATH) as conn:
-                c = conn.cursor()
-                c.execute(
-                    "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
-                )
-                conn.commit()
-            await context.bot.send_message(user_id, "پرداخت شما تأیید شد و ثبت‌نام شما تکمیل شد! ✅")
-            if event[2] != "دوره" and event[6] + 1 >= event[5]:
-                await deactivate_event(event_id, "تکمیل ظرفیت", context)
-        elif sub_action == "unclear_payment":
-            context.user_data["pending_event_id"] = event_id
-            await context.bot.send_message(
-                user_id,
-                "رسید تراکنش شما ناخوانا یا غیرقابل بررسی بود. لطفاً رسید تراکنش‌تون رو دوباره آپلود کنید."
-            )
-        elif sub_action == "cancel_payment":
-            if "pending_event_id" in context.user_data:
-                del context.user_data["pending_event_id"]
-            await context.bot.send_message(
-                user_id,
-                "پرداخت شما تأیید نشد. لطفاً فرآیند ثبت‌نام را دوباره انجام دهید."
-            )
-        await query.message.delete()
-    # مدیریت دکمه‌های مرحله اول (تأیید، ناخوانا، ابطال)
-    elif len(callback_parts) == 3 and action in ["confirm_payment", "unclear_payment", "cancel_payment"]:
-        try:
-            user_id = int(callback_parts[1])
-            event_id = int(callback_parts[2])
-            action_label = {
-                "confirm_payment": "تأیید ✅",
-                "unclear_payment": "ناخوانا 📸",
-                "cancel_payment": "ابطال 🚫"
-            }[action]
-            buttons = [
-                [InlineKeyboardButton(action_label, callback_data=f"confirm_{action}_{user_id}_{event_id}")],
-                [InlineKeyboardButton("بازگشت", callback_data="done")]
-            ]
-            await query.message.edit_reply_markup(InlineKeyboardMarkup(buttons))
-        except (KeyError, ValueError) as e:
-            logger.error(f"Error processing callback data: {query.data}, error: {str(e)}")
-            await query.message.reply_text("خطایی رخ داد. لطفاً دوباره تلاش کنید.")
-            await query.message.delete()
-    else:
-        logger.error(f"Invalid callback data: {query.data}")
-        await query.message.reply_text("خطایی رخ داد. فرمت داده نادرست است.")
-        await query.message.delete()
-
+            c.execute("UPDATE operator_messages SET message_type = 'confirmed' WHERE message_id = ?", (message_id,))
+            conn.commit()
+        await context.bot.send_message(
+            user_id,
+            "پرداخت شما با موفقیت تایید شد! ✅\nبه امید دیدار در رویداد."
+        )
+        await query.edit_message_caption(caption="پرداخت تایید شد ✅")
+    elif action == "unclear_payment":
+        await context.bot.send_message(
+            user_id,
+            "رسید پرداخت شما نامشخص است. لطفاً رسید واضح‌تری ارسال کنید. ❓"
+        )
+        await query.edit_message_caption(caption="رسید نامشخص ❓")
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("UPDATE operator_messages SET message_type = 'unclear' WHERE message_id = ?", (message_id,))
+            conn.commit()
+    elif action == "cancel_payment":
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+            c.execute("UPDATE events SET current_capacity = current_capacity - 1 WHERE event_id = ?", (event_id,))
+            c.execute("UPDATE operator_messages SET message_type = 'cancelled' WHERE message_id = ?", (message_id,))
+            conn.commit()
+        await context.bot.send_message(
+            user_id,
+            "ثبت‌نام شما لغو شد. ❌\nدر صورت نیاز، دوباره ثبت‌نام کنید."
+        )
+        await query.edit_message_caption(caption="پرداخت لغو شد ❌")
+        
 async def deactivate_event(event_id: int, reason: str, context: ContextTypes.DEFAULT_TYPE) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
@@ -875,13 +788,13 @@ async def event_cost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text("هزینه باید عدد باشد. دوباره وارد کنید:")
         return EVENT_COST
     context.user_data["event_cost"] = int(cost)
-    await update.message.reply_text("تاریخ رویداد را با فرمت YYYY-MM-DD وارد کنید:")
+    await update.message.reply_text("تاریخ رویداد را با فرمت YYYY/MM/DD وارد کنید:")
     return EVENT_DATE
 
 async def event_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     date = update.message.text
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-        await update.message.reply_text("فرمت تاریخ باید YYYY-MM-DD باشد. دوباره وارد کنید:")
+    if not re.match(r"^\d{4}/\d{2}/\d{2}$", date):
+        await update.message.reply_text("فرمت تاریخ باید YYYY/MM/DD باشد. دوباره وارد کنید:")
         return EVENT_DATE
     context.user_data["event_date"] = date
     await update.message.reply_text("محل رویداد را وارد کنید (حداقل 5 کاراکتر):")
@@ -979,7 +892,7 @@ async def save_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         for user in users:
             message = (
                 f"{user[1]} عزیز،\n"
-                f"یک #{event_data['event_type']} {event_data['event_hashtag']} اضافه شد.\n"
+                f"یک {event_data['event_type']} {event_data['event_hashtag']} اضافه شد.\n"
                 f"می‌تونی جزئیات رو در کانال انجمن مهندسی شیمی بخونی و همین الان ثبت‌نام کنی..."
             )
             await context.bot.send_message(user[0], message)
@@ -1005,6 +918,70 @@ async def save_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await query.message.reply_text("خطایی در ذخیره رویداد رخ داد. لطفاً دوباره سعی کنید.")
         await query.message.delete()
     return ConversationHandler.END
+
+async def send_attendance_reminder(context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now()
+    if now.hour != 21 or now.minute < 5:  # فقط ساعت 21:00 تا 21:05
+        return
+
+    tomorrow = (now + timedelta(days=1)).date().isoformat()
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT e.event_id, e.title, e.type, e.hashtag, r.user_id, u.full_name
+            FROM events e
+            JOIN registrations r ON e.event_id = r.event_id
+            JOIN users u ON r.user_id = u.user_id
+            WHERE e.is_active = 1
+              AND DATE(e.date) = ?
+        """, (tomorrow,))
+        users = c.fetchall()
+
+    if not users:
+        return
+
+    for user in users:
+        event_id, title, event_type, hashtag, user_id, full_name = user
+        try:
+            await context.bot.send_message(
+                user_id,
+                f"سلام {full_name}!\n\n"
+                f"یادآوری حضور:\n"
+                f"فردا رویدادت داری!\n"
+                f"عنوان: {title} ({event_type})\n"
+                f"#{hashtag.replace(' ', '_')}\n"
+                f"موفق باشی!",
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.warning(f"Attendance reminder failed for {user_id}: {e}")
+
+async def send_payment_reminder(context: ContextTypes.DEFAULT_TYPE, user_id: int, event_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT title, cost FROM events WHERE event_id = ? AND cost > 0", (event_id,))
+        event = c.fetchone()
+        if not event:
+            return
+        c.execute("SELECT payment_id FROM payments WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+        if c.fetchone():
+            return  # قبلاً پرداخت کرده
+
+    title, cost = event
+    try:
+        await context.bot.send_message(
+            user_id,
+            f"یادآوری پرداخت:\n\n"
+            f"شما در رویداد زیر ثبت‌نام کردید:\n"
+            f"عنوان: {title}\n"
+            f"هزینه: {cost:,} تومان\n\n"
+            f"لطفاً رسید پرداخت را به ربات ارسال کنید.\n"
+            f"شماره کارت: `{CARD_NUMBER}`",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.warning(f"Payment reminder failed for {user_id}: {e}")
 
 async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
@@ -1103,8 +1080,8 @@ async def save_edited_event(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         cost = 0 if cost == "رایگان" else int(cost.replace(",", "").replace(" تومان", ""))
 
         date = event_data["تاریخ"]
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-            raise ValueError("فرمت تاریخ باید YYYY-MM-DD باشد.")
+        if not re.match(r"^\d{4}/\d{2}/\d{2}$", date):
+            raise ValueError("فرمت تاریخ باید YYYY/MM/DD باشد.")
 
         location = event_data["محل"]
         if len(location) < 5:
@@ -1227,32 +1204,59 @@ async def announce_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     group_data = query.data.split("_")[2]
-    context.user_data["announce_group"] = group_data
+context.user_data["announce_group"] = query.data.split("_")[1] 
     await query.message.reply_text("لطفاً متن اعلان را وارد کنید:")
     await query.message.delete()
     return ANNOUNCE_MESSAGE
 
 async def send_announcement(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    message = update.message.text
+    query = update.callback_query
+    await query.answer()
+
+    message = update.message.text.strip()
     group = context.user_data["announce_group"]
-    if group == "all":
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT user_id FROM users")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        if group == "all":
+            c.execute("SELECT user_id, full_name FROM users")
             users = c.fetchall()
-        for user in users:
-            await context.bot.send_message(user[0], f"#اطلاعیه\n{message}")
-    else:
-        event_id = int(group)
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT hashtag, type FROM events WHERE event_id = ?", (event_id,))
-            event = c.fetchone()
-            c.execute("SELECT user_id FROM registrations WHERE event_id = ?", (event_id,))
+        else:
+            event_id = int(group)
+            c.execute("""
+                SELECT u.user_id, u.full_name 
+                FROM users u 
+                JOIN registrations r ON u.user_id = r.user_id 
+                WHERE r.event_id = ?
+            """, (event_id,))
             users = c.fetchall()
-        for user in users:
-            await context.bot.send_message(user[0], f"#{event[1]} #{event[0].replace(' ', '_')}\n{message}")
-    await update.message.reply_text("اعلان با موفقیت ارسال شد! ✅", reply_markup=get_admin_menu())
+
+    if not users:
+        await query.message.reply_text("هیچ کاربری برای ارسال اعلان وجود ندارد!")
+        return ConversationHandler.END
+
+    # --- ارسال با مکث 20 پیام + 1 ثانیه ---
+    batch_size = 20
+    sent_count = 0
+    for i in range(0, len(users), batch_size):
+        batch = users[i:i + batch_size]
+        for user in batch:
+            try:
+                user_text = f"سلام {user[1] if user[1] else 'عزیز'}!\n\n#اطلاعیه\n{message}"
+                await context.bot.send_message(user[0], user_text)
+                sent_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to send to {user[0]}: {e}")
+
+        # مکث ۱ ثانیه بعد از هر ۲۰ پیام (جز آخرین بچ)
+        if i + batch_size < len(users):
+            await asyncio.sleep(1)
+
+    await query.message.reply_text(
+        f"اعلان با موفقیت برای {sent_count} کاربر ارسال شد!\n"
+        f"زمان تقریبی: {((sent_count - 1) // 20 + 1)} ثانیه",
+        reply_markup=get_admin_menu()
+    )
     return ConversationHandler.END
 
 async def manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1915,7 +1919,8 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             buttons.append([InlineKeyboardButton(btn_text, callback_data=f"myevent_{event_id}")])
 
     await update.message.reply_text(
-        "رویداد های من😎:",
+        "رویداد های من😎:/n"
+        "l",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 async def my_event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1962,7 +1967,6 @@ async def my_event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if rating:
         text += f"\nامتیاز شما: {'⭐' * rating[0]}"
 
-    buttons = [[InlineKeyboardButton("بازگشت", callback_data="back_to_myprofile")]]
 
     # فقط برای آینده
     if status == "آینده":
@@ -2000,6 +2004,7 @@ def main() -> None:
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
     app.job_queue.run_repeating(send_rating_average, interval=3600, first=60)
+    app.job_queue.run_repeating(send_attendance_reminder, interval=300, first=10)
 
     # ConversationHandler برای profile_conv
     profile_conv = ConversationHandler(
