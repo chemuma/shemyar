@@ -718,14 +718,14 @@ async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             c.execute("UPDATE operator_messages SET message_type = 'confirmed' WHERE message_id = ?", (message_id,))
             conn.commit()
-           await context.bot.send_message(
+            await context.bot.send_message(
                user_id,
                "پرداخت شما با موفقیت تایید شد!✅ به امید دیدار در رویداد."
            )
-           await query.edit_message_caption(caption="پرداخت تایید شد✅")
+            await query.edit_message_caption(caption="پرداخت تایید شد✅")
 
            # --- مرحله 4: اطلاع به نفر اول لیست انتظار ---
-           with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
                c = conn.cursor()
                c.execute("SELECT title FROM events WHERE event_id = ?", (event_id,))
                event_title = c.fetchone()[0]
