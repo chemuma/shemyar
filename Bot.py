@@ -158,8 +158,8 @@ async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT
 
 def get_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
     buttons = [
-        ["دوره ها/ بازدید ها ✏️"],
-        ["پروفایل من 😎 📅", "ویرایش مشخصات "],
+        ["دوره‌ها/بازدیدها 📅"],
+        ["رویداد های من😎", "ویرایش مشخصات ✏️"],
         ["ارتباط با پشتیبانی 📞", "سوالات متداول ❓"],
         ["لغو/شروع دوباره 🚪"]
     ]
@@ -1806,7 +1806,7 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             buttons.append([InlineKeyboardButton(btn_text, callback_data=f"myevent_{event_id}")])
 
     await update.message.reply_text(
-        "رویدادهای من:",
+        "رویداد های من😎:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 async def my_event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2051,7 +2051,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
     app.add_handler(CallbackQueryHandler(show_events, pattern="^back_to_events$"))
     app.add_handler(CallbackQueryHandler(handle_rating, pattern="^rate_"))
-    app.add_handler(MessageHandler(filters.Regex("^(پروفایل من)$"), my_profile))
+    app.add_handler(MessageHandler(filters.Regex("^(رویداد های من😎)$"), my_profile))
     app.add_handler(CallbackQueryHandler(my_event_detail, pattern="^myevent_"))
     app.add_handler(CallbackQueryHandler(cancel_registration, pattern="^cancel_reg_"))
     app.add_handler(CallbackQueryHandler(my_profile, pattern="^back_to_myprofile$"))
