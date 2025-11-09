@@ -125,13 +125,8 @@ def init_db():
               FOREIGN KEY(event_id) REFERENCES events(event_id)
           )
       """)
-        c.execute("PRAGMA table_info(events)")
-        columns = [row[1] for row in c.fetchall()]
-
-        if "rating_sent" not in columns:
-            c.execute("ALTER TABLE events ADD COLUMN rating_sent INTEGER DEFAULT 0")
-        if "rating_deadline" not in columns:
-            c.execute("ALTER TABLE events ADD COLUMN rating_deadline TEXT")
+        c.execute("ALTER TABLE events ADD COLUMN rating_sent INTEGER DEFAULT 0")
+        c.execute("ALTER TABLE events ADD COLUMN rating_deadline TEXT")
         conn.commit()
 
 # States for conversation handlers
@@ -723,150 +718,80 @@ async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             c.execute("UPDATE operator_messages SET message_type = 'confirmed' WHERE message_id = ?", (message_id,))
             conn.commit()
-        
-        await context.bot.send_message(
-            user_id,
-            "پرداخت شما با موفقیت تایید شد!✅ به امید دیدار در رویداد."
-        )
-        await query.edit_message_caption(caption="پرداخت تایید شد✅")
+           await context.bot.send_message(
+            await context.bot.send_message(
+               user_id,
+               "پرداخت شما با موفقیت تایید شد!✅ به امید دیدار در رویداد."
+           )
+           await query.edit_message_caption(caption="پرداخت تایید شد✅")
+            await query.edit_message_caption(caption="پرداخت تایید شد✅")
 
-        # 通知等待列表中的第一个用户
+           # --- مرحله 4: اطلاع به نفر اول لیست انتظار ---
+           with sqlite3.connect(DB_PATH) as conn:
         with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT title FROM events WHERE event_id = ?", (event_id,))
-            event_title = c.fetchone()[0]
+               c = conn.cursor()
+               c.execute("SELECT title FROM events WHERE event_id = ?", (event_id,))
+               event_title = c.fetchone()[0]
 
-            c.execute("""
-                SELECT user_id FROM waitlist 
-                WHERE event_id = ? 
-                ORDER BY added_at ASC 
-                LIMIT 1
-            """, (event_id,))
-            next_user = c.fetchone()
+               c.execute("""
+                   SELECT user_id FROM waitlist 
+                   WHERE event_id = ? 
+                   ORDER BY added_at ASC 
+                   LIMIT 1
+               """, (event_id,))
+               next_user = c.fetchone()
 
-            if next_user:
-                next_user_id = next_user[0]
-                c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (next_user_id, event_id))
-                conn.commit()
+               if next_user:
+                   next_user_id = next_user[0]
+                   c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (next_user_id, event_id))
+                   conn.commit()
 
-                try:
-                    await context.bot.send_message(
-                        next_user_id,
-                        f"ظرفیت آزاد شد🤩!\n\n"
-                        f"لطفاً برای ثبت‌نام در **{event_title}**، مبلغ را واریز کنید و **رسید** را ارسال کنید.\n"
-                        f"شماره کارت: `{CARD_NUMBER}`",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to notify waitlist user {next_user_id}: {e}")
-    
+                   try:
+                       await context.bot.send_message(
+                           next_user_id,
+                           f"ظرفیت آزاد شد🤩!\n\n"
+                           f"لطفاً برای ثبت‌نام در **{event_title}**، مبلغ را واریز کنید و **رسید** را ارسال کنید.\n"
+                           f"شماره کارت: `{CARD_NUMBER}`",
+                           parse_mode="Markdown"
+                       )
+                   except Exception as e:
+                       logger.warning(f"Failed to notify waitlist user {next_user_id}: {e}")
     elif action == "unclear_payment":
         await context.bot.send_message(
             user_id,
             "رسید پرداخت شما نامشخص است. لطفاً رسید واضح‌تری ارسال کنید. ❓"
         )
         await query.edit_message_caption(caption="رسید نامشخص ❓")
-        
         with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("UPDATE operator_messages SET message_type = 'unclear' WHERE message_id = ?", (message_id,))
-            c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-            conn.commit()
-    
+               c = conn.cursor()
+               c.execute("UPDATE operator_messages SET message_type = 'unclear' WHERE message_id = ?", (message_id,))
+               conn.commit()
+
+           # --- مرحله 5: حذف از لیست انتظار (اگر بود) ---
+        with sqlite3.connect(DB_PATH) as conn:
+               c = conn.cursor()
+               c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+               conn.commit()
     elif action == "cancel_payment":
         await query.edit_message_caption(caption="پرداخت لغو شد")
-        
         with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-            c.execute("UPDATE events SET current_capacity = current_capacity - 1 WHERE event_id = ?", (event_id,))
-            c.execute("UPDATE operator_messages SET message_type = 'cancelled' WHERE message_id = ?", (message_id,))
-            c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-            conn.commit()
-            
+               c = conn.cursor()
+               c.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+               c.execute("UPDATE events SET current_capacity = current_capacity - 1 WHERE event_id = ?", (event_id,))
+               c.execute("UPDATE operator_messages SET message_type = 'cancelled' WHERE message_id = ?", (message_id,))
+               conn.commit()
+
+           # --- مرحله 5: حذف از لیست انتظار ---
+        with sqlite3.connect(DB_PATH) as conn:
+               c = conn.cursor()
+               c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+               conn.commit()
         await context.bot.send_message(
             user_id,
             "ثبت‌نام شما لغو شد. ❌\nدر صورت نیاز، دوباره ثبت‌نام کنید."
         )
         await query.edit_message_caption(caption="پرداخت لغو شد ❌")
 
-async def cancel_edit_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("ویرایش رویداد لغو شد.", reply_markup=get_admin_menu())
-    await query.message.delete()
-    return ConversationHandler.END
-
-async def handle_photo_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    
-    if not context.user_data.get("temp_reg"):
-        await update.message.reply_text("لطفاً ابتدا در یک رویداد ثبت‌نام کنید.")
-        return ConversationHandler.END
-    
-    event_id = context.user_data.get("pending_event_id")
-    if not event_id:
-        await update.message.reply_text("خطا: رویداد مورد نظر یافت نشد.")
-        return ConversationHandler.END
-    
-    if "photo_count" not in context.user_data:
-        context.user_data["photo_count"] = 0
-    
-    if context.user_data["photo_count"] >= MAX_PHOTOS:
-        await update.message.reply_text(f"حداکثر {MAX_PHOTOS} عکس می‌توانید ارسال کنید.")
-        return PHOTO_UPLOAD
-    
-    context.user_data["photo_count"] += 1
-
-    photo_file = await update.message.photo[-1].get_file()
-    
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
-        event = c.fetchone()
-        c.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
-        user = c.fetchone()
-    
-    # 发送照片到操作员组
-    await context.bot.send_photo(
-        OPERATOR_GROUP_ID,
-        photo_file.file_id,
-        caption=f"رسید پرداخت برای رویداد: {event[1]}\n"
-                f"کاربر: {user[0]} (ID: {user_id})\n"
-                f"مبلغ: {event[10]:,} تومان\n"
-                f"شماره کارت: {CARD_NUMBER}",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("تایید پرداخت ✅", callback_data=f"confirm_payment_{event_id}_{user_id}"),
-                InlineKeyboardButton("رسید نامشخص ❓", callback_data=f"unclear_payment_{event_id}_{user_id}"),
-                InlineKeyboardButton("لغو پرداخت ❌", callback_data=f"cancel_payment_{event_id}_{user_id}")
-            ]
-        ])
-    )
-    message = await context.bot.send_message(
-        OPERATOR_GROUP_ID,
-        f"رسید پرداخت برای رویداد {event[1]} از طرف {user[0]} دریافت شد."
-    )
-    
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "payment_photo", datetime.now().isoformat())
-        )
-        conn.commit()
-    
-    await update.message.reply_text(
-        f"رسید شما با موفقیت ارسال شد (عکس {context.user_data['photo_count']}/{MAX_PHOTOS}).\n"
-        "اپراتورها در حال بررسی هستند و به شما اطلاع خواهند داد."
-    )
-    
-    if context.user_data["photo_count"] >= MAX_PHOTOS:
-        context.user_data.clear()
-        return ConversationHandler.END
-    
-    return PHOTO_UPLOAD
-        
 async def deactivate_event(event_id: int, reason: str, context: ContextTypes.DEFAULT_TYPE) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
@@ -1211,7 +1136,7 @@ async def save_edited_event(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 key, value = line.split(":", 1)
                 event_data[key.strip()] = value.strip()
 
-        # 检查必要字段
+        # بررسی وجود کلیدهای ضروری
         required_keys = ["نوع", "عنوان", "هشتگ", "توضیحات", "هزینه", "تاریخ", "محل", "ظرفیت"]
         missing_keys = [key for key in required_keys if key not in event_data]
         if missing_keys:
@@ -1223,12 +1148,13 @@ async def save_edited_event(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 "هشتگ: #[هشتگ]\n"
                 "توضیحات: [توضیحات]\n"
                 "هزینه: [هزینه یا رایگان]\n"
-                "تاریخ: [YYYY/MM/DD]\n"
+                "تاریخ: [YYYY-MM-DD]\n"
                 "محل: [محل]\n"
                 "ظرفیت: [ظرفیت یا نامحدود]"
             )
             return EDIT_EVENT
 
+        # اعتبارسنجی مقادیر
         event_type = event_data["نوع"]
         if event_type not in ["دوره", "بازدید"]:
             raise ValueError("نوع رویداد باید 'دوره' یا 'بازدید' باشد.")
@@ -1258,29 +1184,32 @@ async def save_edited_event(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         capacity = event_data["ظرفیت"]
         capacity = 0 if capacity == "نامحدود" else int(capacity)
+        if capacity < 0:
+            raise ValueError("ظرفیت نمی‌تواند منفی باشد.")
 
         with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
             c.execute(
                 """
-                UPDATE events 
-                SET title=?, type=?, date=?, location=?, capacity=?, 
-                    description=?, hashtag=?, cost=?
-                WHERE event_id=?
+                UPDATE events SET title = ?, type = ?, date = ?, location = ?, capacity = ?,
+                description = ?, hashtag = ?, cost = ?, card_number = ?
+                WHERE event_id = ?
                 """,
-                (title, event_type, date, location, capacity, description, hashtag, cost, event_id)
+                (
+                    title, event_type, date, location, capacity, description, hashtag,
+                    cost, CARD_NUMBER if cost > 0 else "", event_id
+                )
             )
             conn.commit()
-
         await update.message.reply_text("رویداد با موفقیت ویرایش شد! ✅", reply_markup=get_admin_menu())
         return ConversationHandler.END
-
     except ValueError as e:
-        await update.message.reply_text(f"خطا: {str(e)}")
+        logger.error(f"Error parsing edited event text: {str(e)}")
+        await update.message.reply_text(f"خطا: {str(e)}\nلطفاً متن را با فرمت صحیح وارد کنید.")
         return EDIT_EVENT
     except Exception as e:
-        logger.error(f"Error editing event: {str(e)}")
-        await update.message.reply_text("خطایی در ویرایش رویداد رخ داد. لطفاً دوباره سعی کنید.")
+        logger.error(f"Unexpected error: {str(e)}")
+        await update.message.reply_text("خطای غیرمنتظره رخ داد. لطفاً دوباره سعی کنید.")
         return EDIT_EVENT
 
 async def toggle_event_status_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1727,7 +1656,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text(text, reply_markup=get_admin_menu())
         await query.message.delete()
         return ConversationHandler.END
-        
+
 async def send_rating_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS and not get_admin_info(user_id):
@@ -1886,7 +1815,7 @@ async def send_rating_average(context: ContextTypes.DEFAULT_TYPE):
 async def start_photo_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    
+
     if query.data == "skip_photo":
         await query.message.edit_text("ممنون از شرکتت در نظرسنجی! موفق باشی!")
         return ConversationHandler.END
@@ -2163,15 +2092,16 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.message.edit_text("ثبت‌نام شما با موفقیت لغو شد!", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("بازگشت به پروفایل", callback_data="back_to_myprofile")]
     ]))
-    
+
 
 def main() -> None:
     init_db()
-    
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # 注册处理器
-    conv_handler = ConversationHandler(
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.job_queue.run_repeating(send_rating_average, interval=3600, first=60)
+    app.job_queue.run_repeating(send_attendance_reminder, interval=300, first=10)
+
+    # ConversationHandler برای profile_conv
+    profile_conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             FULL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, full_name)],
@@ -2180,27 +2110,40 @@ def main() -> None:
             CONFIRM_NATIONAL_ID: [CallbackQueryHandler(confirm_national_id)],
             STUDENT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, student_id)],
             CONFIRM_STUDENT_ID: [CallbackQueryHandler(confirm_student_id)],
-            PHONE: [MessageHandler(filters.TEXT | filters.CONTACT, phone)],
+            PHONE: [
+                MessageHandler(filters.CONTACT, phone),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, phone)
+            ],
             CONFIRM_PHONE: [CallbackQueryHandler(confirm_phone)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
     )
-    
-    edit_profile_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^ویرایش مشخصات ✏️$"), edit_profile_start)],
+
+    # ConversationHandler برای edit_profile_conv
+    edit_profile_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(ویرایش مشخصات ✏️)$"), edit_profile_start)],
         states={
             EDIT_PROFILE: [CallbackQueryHandler(edit_profile)],
-            EDIT_PROFILE_VALUE: [MessageHandler(filters.TEXT | filters.CONTACT, edit_profile_value)],
+            EDIT_PROFILE_VALUE: [
+                MessageHandler(filters.CONTACT, edit_profile_value),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_profile_value),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
     )
-    
-    add_event_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^اضافه کردن رویداد جدید ➕$"), add_event)],
+
+    # ConversationHandler برای add_event_conv
+    add_event_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(اضافه کردن رویداد جدید ➕)$"), add_event)],
         states={
             EVENT_TYPE: [CallbackQueryHandler(event_type)],
             EVENT_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, event_title)],
-            EVENT_DESCRIPTION: [MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, event_description)],
+            EVENT_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, event_description),
+                MessageHandler(filters.PHOTO, event_description),
+            ],
             EVENT_COST: [MessageHandler(filters.TEXT & ~filters.COMMAND, event_cost)],
             EVENT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, event_date)],
             EVENT_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, event_location)],
@@ -2208,42 +2151,140 @@ def main() -> None:
             CONFIRM_EVENT: [CallbackQueryHandler(save_event)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
     )
-    
-    edit_event_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^تغییر رویداد فعال ✏️$"), edit_event_start)],
+
+    # ConversationHandler برای edit_event_conv
+    edit_event_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(تغییر رویداد فعال ✏️)$"), edit_event_start)],
         states={
-            EDIT_EVENT: [CallbackQueryHandler(edit_event), MessageHandler(filters.TEXT & ~filters.COMMAND, save_edited_event)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(cancel_edit_event)],
-    )
-    
-    photo_upload_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.PHOTO, handle_photo_upload)],
-        states={
-            PHOTO_UPLOAD: [MessageHandler(filters.PHOTO, handle_photo_upload)],
+            EDIT_EVENT: [
+                CallbackQueryHandler(edit_event),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edited_event),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
     )
-    
-    application.add_handler(conv_handler)
-    application.add_handler(edit_profile_handler)
-    application.add_handler(add_event_handler)
-    application.add_handler(edit_event_handler)
-    application.add_handler(photo_upload_handler)
-    application.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
-    application.add_handler(CallbackQueryHandler(event_details, pattern="^event_"))
-    application.add_handler(CallbackQueryHandler(register_event, pattern="^register_"))
-    application.add_handler(CallbackQueryHandler(payment_action, pattern="^(confirm_payment|unclear_payment|cancel_payment)_"))
-    application.add_handler(MessageHandler(filters.Regex("^دوره‌ها/بازدیدها 📅$"), show_events))
-    application.add_handler(MessageHandler(filters.Regex("^منوی ادمین ⚙️$"), admin_menu))
-    application.add_handler(MessageHandler(filters.Regex("^لغو/شروع دوباره 🚪$"), reset_bot))
-    
-    # 设置定时任务
-    job_queue = application.job_queue
-    job_queue.run_daily(send_attendance_reminder, time=datetime.time(hour=21, minute=0))
-    
-    application.run_polling()
+
+    # ConversationHandler برای toggle_event_conv
+    toggle_event_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(غیرفعال/فعال کردن رویداد 🔄)$"), toggle_event_status_start)],
+        states={
+            DEACTIVATE_REASON: [CallbackQueryHandler(toggle_event_status)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
+
+    # ConversationHandler برای announce_conv
+    announce_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(اعلان عمومی 📢)$"), announce_start)],
+        states={
+            ANNOUNCE_GROUP: [CallbackQueryHandler(announce_group)],
+            ANNOUNCE_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_announcement)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
+
+    # ConversationHandler برای manage_admins_conv
+    manage_admins_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(مدیریت ادمین‌ها 👤)$"), manage_admins)],
+        states={
+            ADD_ADMIN: [
+                CallbackQueryHandler(add_admin),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_admin),
+            ],
+            REMOVE_ADMIN: [CallbackQueryHandler(remove_admin)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
+
+    # ConversationHandler برای manual_reg_conv
+    manual_reg_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(اضافه کردن دستی به ثبت‌نام 📋)$"), manual_registration_start)],
+        states={
+            MANUAL_REG_EVENT: [CallbackQueryHandler(manual_registration_event)],
+            MANUAL_REG_STUDENT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, manual_registration_student_id)],
+            CONFIRM_MANUAL_REG: [CallbackQueryHandler(confirm_manual_registration)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
+
+    # ConversationHandler برای report_conv
+    report_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(گزارش‌ها 📊)$"), report_start)],
+        states={
+            REPORT_TYPE: [CallbackQueryHandler(report_type)],
+            REPORT_PERIOD: [CallbackQueryHandler(generate_report)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
+    #ConversationHandler برای send_rating_conv
+    send_rating_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(ارسال فرم امتیاز 🌟)$"), send_rating_start)],
+        states={
+            SEND_RATING_EVENT: [CallbackQueryHandler(send_rating_to_event, pattern="^send_rating_")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
+    #ConversationHandler برای photo_upload_conv
+    photo_upload_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_photo_upload, pattern="^(upload_photo_|skip_photo)$")
+        ],
+        states={
+            PHOTO_UPLOAD: [
+                MessageHandler(filters.PHOTO | filters.VIDEO, receive_photo),
+                CallbackQueryHandler(finish_upload, pattern="^finish_upload$")
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
+
+    app.add_handler(photo_upload_conv)
+
+
+
+    # ثبت هندلرها
+    app.add_handler(profile_conv)
+    app.add_handler(edit_profile_conv)
+    app.add_handler(add_event_conv)
+    app.add_handler(edit_event_conv)
+    app.add_handler(toggle_event_conv)
+    app.add_handler(announce_conv)
+    app.add_handler(manage_admins_conv)
+    app.add_handler(manual_reg_conv)
+    app.add_handler(report_conv)
+    app.add_handler(send_rating_conv)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Regex("^(دوره‌ها/بازدیدها 📅)$"), show_events))
+    app.add_handler(MessageHandler(filters.Regex("^(ارتباط با پشتیبانی 📞)$"), handle_support_message))
+    app.add_handler(MessageHandler(filters.Regex("^(سوالات متداول ❓)$"), faq))
+    app.add_handler(MessageHandler(filters.Regex("^(لغو/شروع دوباره 🚪)$"), reset_bot))
+    app.add_handler(MessageHandler(filters.Regex("^(منوی ادمین ⚙️)$"), admin_menu))
+    app.add_handler(MessageHandler(filters.Regex("^(بازگشت 🔙)$"), back_to_main))
+    app.add_handler(CallbackQueryHandler(event_details, pattern="^event_"))
+    app.add_handler(CallbackQueryHandler(register_event, pattern="^register_"))
+    app.add_handler(CallbackQueryHandler(payment_action, pattern="^(confirm_payment_|unclear_payment_|cancel_payment_|confirm_|done)"))
+    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_payment_receipt))
+    app.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
+    app.add_handler(CallbackQueryHandler(show_events, pattern="^back_to_events$"))
+    app.add_handler(CallbackQueryHandler(handle_rating, pattern="^rate_"))
+    app.add_handler(MessageHandler(filters.Regex("^(رویداد های من😎)$"), my_profile))
+    app.add_handler(CallbackQueryHandler(my_event_detail, pattern="^myevent_"))
+    app.add_handler(CallbackQueryHandler(cancel_registration, pattern="^cancel_reg_"))
+    app.add_handler(CallbackQueryHandler(my_profile, pattern="^back_to_myprofile$"))
+    app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
+
+    logger.info("Bot is starting...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
