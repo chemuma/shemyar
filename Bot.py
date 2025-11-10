@@ -14,6 +14,7 @@ from telegram.ext import (
     ContextTypes,
 )
 from telegram import Update
+from telegram.error import Forbidden
 import uuid
 import asyncio
 
@@ -36,6 +37,34 @@ DB_PATH = "chemeng_bot.db"
 RATING_DEADLINE_HOURS = 24
 USER_PHOTOS_GROUP_ID = -1003246645055
 MAX_PHOTOS = 3
+
+
+def jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple:
+    jy += 1595
+    days = -355668 + (365 * jy) + ((jy // 33) * 8) + ((jy % 33) // 4) + jd
+    if jm < 7:
+        days += (jm - 1) * 31
+    else:
+        days += (jm - 7) * 30 + 186
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        gy += 100 * ((days - 1) // 36524)
+        days = (days - 1) % 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += ((days - 1) // 365)
+        days = (days - 1) % 365
+    gd = days + 1
+    sal_a = [0, 31, ((gy % 4 == 0 and gy % 100 != 0) or (gy % 400 == 0)) and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    gm = 0
+    while gm < 13 and gd > sal_a[gm]:
+        gd -= sal_a[gm]
+        gm += 1
+    return (gy, gm, gd)
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -1306,8 +1335,8 @@ async def announce_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ANNOUNCE_MESSAGE
 
 async def send_announcement(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
+    message = update.message.text.strip() 
+    group = context.user_data["announce_group"]
 
     message = update.message.text.strip()
     group = context.user_data["announce_group"]
@@ -1348,7 +1377,7 @@ async def send_announcement(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if i + batch_size < len(users):
             await asyncio.sleep(1)
 
-    await query.message.reply_text(
+    await update.message.reply_text(  # به جای query.message.reply_text
         f"اعلان با موفقیت برای {sent_count} کاربر ارسال شد!\n"
         f"زمان تقریبی: {((sent_count - 1) // 20 + 1)} ثانیه",
         reply_markup=get_admin_menu()
@@ -1647,7 +1676,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return ConversationHandler.END
         text = "گزارش مالی:\n"
         for report in reports:
-            if report[4]:  # اگر پرداختی وجود داشته باشد
+            if report[4] is not None:  # اگر پرداختی وجود داشته باشد
                 text += (
                     f"رویداد: {report[0]} ({report[1]})\n"
                     f"نام: {report[2]}\n"
@@ -1705,6 +1734,12 @@ async def send_rating_to_event(update: Update, context: ContextTypes.DEFAULT_TYP
 
     sent_count = 0
     for user_id in users:
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
+        full_name_row = c.fetchone()
+        full_name = full_name_row[0] if full_name_row else "کاربر"
+        
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("1⭐", callback_data=f"rate_{event_id}_1"),
             InlineKeyboardButton("2⭐", callback_data=f"rate_{event_id}_2"),
@@ -1716,7 +1751,7 @@ async def send_rating_to_event(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             await context.bot.send_message(
                 user_id,
-                f"{full_name} ، امروز چطور بود؟؟؟!"
+                f"{full_name} ، امروز چطور بود؟؟؟!\n..."
                 f"🌟 *نظرت درباره‌ی {event[0]} چیه؟*\n\n"
                 f"#{event[1]} #{event[2].replace(' ', '_')}\n\n"
                 f"لطفاً تا ۲۴ ساعت آینده (تا ساعت {deadline_str}) امتیازت رو ثبت کن:\n"
@@ -1857,7 +1892,8 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         caption = update.message.video_caption or ""
 
     if not file:
-        return PHOTO_UPLOAD
+    await update.message.reply_text("لطفاً فقط عکس یا ویدیو کوتاه بفرستید!")
+    return PHOTO_UPLOAD
 
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
@@ -2015,8 +2051,7 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             buttons.append([InlineKeyboardButton(btn_text, callback_data=f"myevent_{event_id}")])
 
     await update.message.reply_text(
-        "رویداد های من😎:/n"
-        "l",
+        "رویداد های من😎:/n",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 async def my_event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2096,6 +2131,9 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     ]))
 
 async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user is None:
+        logger.warning("Effective user is None, skipping payment receipt.")
+        return
     user_id = update.effective_user.id
     event_id = context.user_data.get("pending_event_id")
     if not event_id:
@@ -2317,7 +2355,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(event_details, pattern="^event_"))
     app.add_handler(CallbackQueryHandler(register_event, pattern="^register_"))
     app.add_handler(CallbackQueryHandler(payment_action, pattern="^(confirm_payment_|unclear_payment_|cancel_payment_|confirm_|done)"))
-    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_payment_receipt))
+    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_payment_receipt))
     app.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
     app.add_handler(CallbackQueryHandler(show_events, pattern="^back_to_events$"))
     app.add_handler(CallbackQueryHandler(handle_rating, pattern="^rate_"))
