@@ -1733,8 +1733,8 @@ async def send_rating_to_event(update: Update, context: ContextTypes.DEFAULT_TYP
     deadline_str = deadline.strftime("%H:%M - %Y/%m/%d")
 
     sent_count = 0
-    for user_id in users:
-     with sqlite3.connect(DB_PATH) as conn:
+        for user_id in users:
+    with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
         c.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
         full_name_row = c.fetchone()
