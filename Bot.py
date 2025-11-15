@@ -586,112 +586,143 @@ async def event_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     await query.message.delete()
 
+
 async def register_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     event_id = int(query.data.split("_")[1])
-    user_id = update.effective_user.id
 
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
-        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        c.execute("SELECT title, type, cost, is_active, deactivation_reason FROM events WHERE event_id = ?", (event_id,))
         event = c.fetchone()
         if not event:
             await query.edit_message_text("رویداد یافت نشد!")
             return
-        if not event[8]:  # is_active
-            await query.edit_message_text(f"رویداد غیرفعال است.\nدلیل: {event[12] or 'نامشخص'}")
+        if not event[3]:  # is_active
+            await query.edit_message_text(f"رویداد غیرفعال است.\nدلیل: {event[4] or 'نامشخص'}")
             return
 
-        # آیا قبلاً ثبت‌نام کرده؟
-        c.execute("SELECT 1 FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-        if c.fetchone():
-            await query.edit_message_text("شما قبلاً در این رویداد ثبت‌نام کرده‌اید.")
-            return
-
-        # چک ظرفیت برای بازدیدها
-        if event[2] == "بازدید" and event[6] >= event[5]:
-            await query.edit_message_text("ظرفیت رویداد پر شده است.")
-            return
-
-    # رویداد رایگان
-    if event[10] == 0:
-        await _register_free(user_id, event_id, context)
-        return
-
-    # رویداد پولی — بررسی pending و waitlist
-    pending = get_pending_count(event_id)
-    remaining = event[5] - event[6]  # ظرفیت خالی واقعی
-
-    # لیست انتظار
+    cost_text = "رایگان" if event[2] == 0 else f"{event[2]:,} تومان"
+    await query.edit_message_text(
+        f"*آیا مطمئن هستید که می‌خواهید در رویداد زیر ثبت‌نام کنید؟*\n\n"
+        f"عنوان: {event[0]}\n"
+        f"نوع: {event[1]}\n"
+        f"هزینه: {cost_text}\n\n"
+        f"این عمل نهایی است.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("بله، ثبت‌نام کن", callback_data=f"final_reg_{event_id}")],
+            [InlineKeyboardButton("خیر، لغو", callback_data="cancel_reg_announce")]
+        ])
+    )
+async def register_event_logic(user_id: int, event_id: int, context: ContextTypes.DEFAULT_TYPE):
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
+        # همه ستون‌ها رو بکش
+        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+        if not event:
+            await context.bot.send_message(user_id, "رویداد یافت نشد.")
+            return
+        if not event[8]:  # is_active
+            await context.bot.send_message(user_id, "این رویداد دیگر فعال نیست.")
+            return
+
+        # چک تکراری
+        c.execute("SELECT 1 FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+        if c.fetchone():
+            await context.bot.send_message(user_id, "شما قبلاً در این رویداد ثبت‌نام کرده‌اید.")
+            return
+
+        # چک ظرفیت برای بازدید
+        if event[2] == "بازدید" and event[6] >= event[5]:
+            await context.bot.send_message(user_id, "ظرفیت رویداد پر شده است.")
+            return
+
+        # رویداد رایگان
+        if event[10] == 0:
+            c.execute("INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
+                      (user_id, event_id, datetime.now().isoformat()))
+            c.execute("UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?", (event_id,))
+            c.execute("SELECT full_name, national_id, student_id, phone FROM users WHERE user_id = ?", (user_id,))
+            user = c.fetchone()
+            c.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,))
+            order = c.fetchone()[0]
+            conn.commit()
+
+            # event[9] = hashtag, event[2] = type
+            hashtag = f"#{event[2]} #{event[9].replace(' ', '_')}" if event[9] else f"#{event[2]}"
+            text = f"{hashtag}\n{order}:\nنام: {user[0]}\nکد ملی: {user[1]}\nشماره دانشجویی: {user[2]}\nتلفن: {user[3]}"
+            msg = await context.bot.send_message(OPERATOR_GROUP_ID, text)
+            c.execute("INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) "
+                      "VALUES (?, ?, ?, ?, ?, ?)",
+                      (msg.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat()))
+            conn.commit()
+
+            await context.bot.send_message(user_id, "ثبت‌نام شما با موفقیت انجام شد!")
+            
+            # چک تکمیل ظرفیت
+            c.execute("SELECT current_capacity, capacity, type FROM events WHERE event_id = ?", (event_id,))
+            cur, cap, typ = c.fetchone()
+            if typ == "بازدید" and cur >= cap:
+                await deactivate_event(event_id, "تکمیل ظرفیت", context)
+            return
+
+        # رویداد پولی
+        pending = get_pending_count(event_id)
+        remaining = event[5] - event[6]
+
         c.execute("SELECT COUNT(*) FROM waitlist WHERE event_id = ?", (event_id,))
         waitlist_cnt = c.fetchone()[0]
 
-    if pending >= remaining:
-        if waitlist_cnt >= 5:
-            await query.edit_message_text("ظرفیت و لیست انتظار پر است.")
-            return
-        # اضافه به لیست انتظار
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
+        if pending >= remaining:
+            if waitlist_cnt >= 5:
+                await context.bot.send_message(user_id, "ظرفیت و لیست انتظار پر است.")
+                return
             c.execute("INSERT OR IGNORE INTO waitlist (user_id, event_id, added_at) VALUES (?, ?, ?)",
                       (user_id, event_id, datetime.now().isoformat()))
             conn.commit()
-        await query.edit_message_text(
-            "ظرفیت موقت پر است.\nشما در **لیست انتظار** (حداکثر ۵ نفر) قرار گرفتید.\nبه محض آزاد شدن ظرفیت به شما اطلاع می‌دهیم.",
+            await context.bot.send_message(
+                user_id,
+                "ظرفیت موقت پر است.\nشما در **لیست انتظار** (حداکثر ۵ نفر) قرار گرفتید.\nبه محض آزاد شدن ظرفیت به شما اطلاع می‌دهیم.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        c.execute("INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
+                  (user_id, event_id, datetime.now().isoformat()))
+        conn.commit()
+        context.user_data["pending_event_id"] = event_id
+        await context.bot.send_message(
+            user_id,
+            f"برای ثبت‌نام در **{event[1]}** مبلغ **{event[10]:,} تومان** را به کارت زیر واریز کنید:\n`{CARD_NUMBER}`\n\n"
+            f"لطفاً **تصویر رسید** را ارسال کنید.\n"
+            f"ظرفیت موقت باقی‌مانده: {remaining - pending} نفر",
             parse_mode=ParseMode.MARKDOWN
         )
-        return
+async def final_register_from_announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
 
-    # ثبت‌نام موقت + درخواست رسید
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
-                  (user_id, event_id, datetime.now().isoformat()))
-        conn.commit()
+    if query.data == "cancel_reg_announce":
+        await query.edit_message_text("ثبت‌نام لغو شد.")
+        return ConversationHandler.END
 
-    context.user_data["pending_event_id"] = event_id
-    await query.edit_message_text(
-        f"برای ثبت‌نام در **{event[1]}** مبلغ **{event[10]:,} تومان** را به کارت زیر واریز کنید:\n`{CARD_NUMBER}`\n\n"
-        f"لطفاً **تصویر رسید** را ارسال کنید.\n"
-        f"ظرفیت موقت باقی‌مانده: {remaining - pending} نفر",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    event_id = int(query.data.split("_")[2])
+    user_id = update.effective_user.id
 
-async def _register_free(user_id: int, event_id: int, context: ContextTypes.DEFAULT_TYPE):
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
-                  (user_id, event_id, datetime.now().isoformat()))
-        c.execute("UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?", (event_id,))
-        c.execute("SELECT full_name, national_id, student_id, phone FROM users WHERE user_id = ?", (user_id,))
-        user = c.fetchone()
-        c.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,))
-        order = c.fetchone()[0]
-        conn.commit()
+    msg = await query.edit_message_text("در حال ثبت‌نام... لطفاً صبر کنید")
 
-    hashtag = f"#{event[2]} #{event[9].replace(' ', '_')}"
-    text = f"{hashtag}\n{order}:\nنام: {user[0]}\nکد ملی: {user[1]}\nشماره دانشجویی: {user[2]}\nتلفن: {user[3]}"
-    msg = await context.bot.send_message(OPERATOR_GROUP_ID, text)
+    try:
+        await register_event_logic(user_id, event_id, context)
+        await msg.edit_text("ثبت‌نام شما با موفقیت انجام شد!")
+    except Exception as e:
+        logger.error(f"Register failed: {e}")
+        await msg.edit_text("خطا در ثبت‌نام. لطفاً دوباره تلاش کنید.")
 
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) "
-                  "VALUES (?, ?, ?, ?, ?, ?)",
-                  (msg.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat()))
-        conn.commit()
+    return ConversationHandler.END
 
-    await context.bot.send_message(user_id, "ثبت‌نام شما با موفقیت انجام شد! ✅")
-
-    # چک تکمیل ظرفیت
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT current_capacity, capacity, type FROM events WHERE event_id = ?", (event_id,))
-        cur, cap, typ = c.fetchone()
-        if typ == "بازدید" and cur >= cap:
-            await deactivate_event(event_id, "تکمیل ظرفیت", context)
 
 async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
