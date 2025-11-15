@@ -146,6 +146,7 @@ MANUAL_REG_EVENT, MANUAL_REG_STUDENT_ID, CONFIRM_MANUAL_REG = range(3)
 REPORT_TYPE, REPORT_PERIOD = range(2)
 SEND_RATING_EVENT = 0
 PHOTO_UPLOAD_CONFIRM, PHOTO_UPLOAD = range(2)
+CONFIRM_REG_FROM_ANNOUNCE = 0
 
 # Utility functions
 def validate_national_id(national_id: str) -> bool:
@@ -1125,6 +1126,47 @@ async def save_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await query.message.delete()
     return ConversationHandler.END
 
+async def register_from_announce_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    event_id = int(query.data.split("_")[1])
+    context.user_data["announce_event_id"] = event_id
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT title, type, cost FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+
+    cost_text = "رایگان" if event[2] == 0 else f"{event[2]:,} تومان"
+    await query.edit_message_text(
+        f"آیا مطمئن هستید که می‌خواهید در رویداد زیر ثبت‌نام کنید؟\n\n"
+        f"عنوان: {event[0]}\nنوع: {event[1]}\nهزینه: {cost_text}\n\n"
+        f"دقت کنید: ثبت‌نام نهایی است.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("بله، ثبت‌نام کن", callback_data=f"final_reg_{event_id}")],
+            [InlineKeyboardButton("خیر، لغو", callback_data="cancel_reg_announce")]
+        ])
+    )
+    return CONFIRM_REG_FROM_ANNOUNCE
+
+async def final_register_from_announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    if query.data == "cancel_reg_announce":
+        await query.edit_message_text("ثبت‌نام لغو شد.")
+        return ConversationHandler.END
+
+    event_id = context.user_data.get("announce_event_id")
+    if not event_id:
+        await query.edit_message_text("خطا: رویداد پیدا نشد.")
+        return ConversationHandler.END
+
+    user_id = update.effective_user.id
+    await query.edit_message_text("در حال ثبت‌نام...")
+    await register_event_logic(user_id, event_id, context, from_announce=True)
+    del context.user_data["announce_event_id"]
+    return ConversationHandler.END
+
 async def send_attendance_reminder(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
     if now.hour != 21 or now.minute < 5:  # فقط ساعت 21:00 تا 21:05
@@ -1642,8 +1684,21 @@ async def confirm_manual_registration(update: Update, context: ContextTypes.DEFA
             (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
         )
         conn.commit()
+
+    try:
+        await context.bot.send_message(
+            user_id,
+            f"سلام {full_name}!\n\n"
+            f"شما توسط ادمین در رویداد ثبت‌نام شدید.\n"
+            f"یادآوری روز قبل رویداد برای شما **فعال شد**.\n"
+            f"جزئیات بیشتر به زودی ارسال می‌شود.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except:
+        pass  # اگر کاربر بلاک کرده باشه
     await query.message.reply_text("ثبت‌نام دستی با موفقیت انجام شد! ✅", reply_markup=get_admin_menu())
     await query.message.delete()
+    
     if event[2] != "دوره" and event[6] + 1 >= event[5]:
         await deactivate_event(event_id, "تکمیل ظرفیت", context)
     return ConversationHandler.END
@@ -2274,7 +2329,18 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
         per_message=False
     )
+    # ConversationHandler برای announce_reg_conv
+announce_reg_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(register_from_announce_confirm, pattern="^register_")],
+    states={
+        CONFIRM_REG_FROM_ANNOUNCE: [CallbackQueryHandler(final_register_from_announce, pattern="^(final_reg_|cancel_reg_announce)")],
+    },
+    fallbacks=[],
+    per_message=True
+)
 
+app.add_handler(announce_reg_conv)
+    
     # ConversationHandler برای manage_admins_conv
     manage_admins_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^(مدیریت ادمین‌ها 👤)$"), manage_admins)],
@@ -2360,7 +2426,7 @@ def main():
     app.add_handler(CallbackQueryHandler(event_details, pattern="^event_"))
     app.add_handler(CallbackQueryHandler(register_event, pattern="^register_"))
     app.add_handler(CallbackQueryHandler(payment_action, pattern="^(confirm_payment_|unclear_payment_|cancel_payment_)"))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.DOCUMENT, handle_payment_receipt))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_payment_receipt))
     app.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
     app.add_handler(CallbackQueryHandler(show_events, pattern="^back_to_events$"))
     app.add_handler(CallbackQueryHandler(handle_rating, pattern="^rate_"))
