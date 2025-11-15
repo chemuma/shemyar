@@ -2330,14 +2330,14 @@ def main():
         per_message=False
     )
     # ConversationHandler برای announce_reg_conv
-announce_reg_conv = ConversationHandler(
-    entry_points=[CallbackQueryHandler(register_from_announce_confirm, pattern="^register_")],
-    states={
-        CONFIRM_REG_FROM_ANNOUNCE: [CallbackQueryHandler(final_register_from_announce, pattern="^(final_reg_|cancel_reg_announce)")],
-    },
-    fallbacks=[],
-    per_message=True
-)
+    announce_reg_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(register_from_announce_confirm, pattern="^register_")],
+        states={
+            CONFIRM_REG_FROM_ANNOUNCE: [CallbackQueryHandler(final_register_from_announce, pattern="^(final_reg_|cancel_reg_announce)")],
+        },
+        fallbacks=[],
+        per_message=True
+    )
     
     # ConversationHandler برای manage_admins_conv
     manage_admins_conv = ConversationHandler(
