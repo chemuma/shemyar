@@ -2338,8 +2338,6 @@ announce_reg_conv = ConversationHandler(
     fallbacks=[],
     per_message=True
 )
-
-app.add_handler(announce_reg_conv)
     
     # ConversationHandler برای manage_admins_conv
     manage_admins_conv = ConversationHandler(
@@ -2411,6 +2409,7 @@ app.add_handler(announce_reg_conv)
     app.add_handler(add_event_conv)
     app.add_handler(edit_event_conv)
     app.add_handler(toggle_event_conv)
+    app.add_handler(announce_reg_conv)
     app.add_handler(announce_conv)
     app.add_handler(manage_admins_conv)
     app.add_handler(manual_reg_conv)
