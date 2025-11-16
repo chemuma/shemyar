@@ -582,7 +582,7 @@ async def event_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"توضیحات: {event[7]}"
     )
     buttons = [
-        [InlineKeyboardButton("ثبت‌نام ✅", callback_data=f"register_{event_id}")],
+        [InlineKeyboardButton("همین الان ثبت‌نام کن ✅", callback_data=f"register_{event_id}")],
     ]
     await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     await query.message.delete()
@@ -696,7 +696,10 @@ async def register_event_logic(user_id: int, event_id: int, context: ContextType
                 parse_mode=ParseMode.MARKDOWN
             )
             return
-
+        c.execute("SELECT 1 FROM registrations WHERE event_id = ? AND user_id = ? AND status = 'pending'", (event_id, user_id))
+        if c.fetchone():
+            await context.bot.send_message(user_id, "شما قبلاً رسید ارسال کرده‌اید. منتظر تأیید اپراتور باشید.")
+            return
         c.execute("INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
                   (user_id, event_id, datetime.now().isoformat()))
         conn.commit()
@@ -805,6 +808,7 @@ async def confirm_payment_action(update: Update, context: ContextTypes.DEFAULT_T
     event_id = int(data[2])
     user_id = int(data[3])
 
+    # دریافت اطلاعات
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
         c.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
@@ -814,25 +818,43 @@ async def confirm_payment_action(update: Update, context: ContextTypes.DEFAULT_T
         c.execute("SELECT title FROM events WHERE event_id = ?", (event_id,))
         event_title = c.fetchone()[0]
 
+    # --- 1. دکمه تأیید ---
     if action == "confirm":
-        # ثبت‌نام نهایی
         try:
-            c.execute("INSERT INTO registrations (event_id, user_id, status) VALUES (?, ?, 'confirmed')",
-                      (event_id, user_id))
+            # آپدیت status از pending به confirmed
+            c.execute("""
+                UPDATE registrations 
+                SET status = 'confirmed' 
+                WHERE event_id = ? AND user_id = ? AND status = 'pending'
+            """, (event_id, user_id))
+            
+            if c.rowcount == 0:
+                await query.edit_message_caption("این کاربر قبلاً تأیید شده یا ثبت‌نام نشده.")
+                return
+
+            # افزایش ظرفیت
             c.execute("UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?", (event_id,))
             conn.commit()
 
             await query.edit_message_caption(
-                caption=f"رسید تأیید شد\n"
+                caption=f"پرداخت تأیید شد\n"
                         f"کاربر: **{full_name}**\n"
                         f"رویداد: {event_title}\n"
-                        f"وضعیت: ثبت‌نام کامل شد",
+                        f"وضعیت: **ثبت‌نام کامل شد**",
                 parse_mode=ParseMode.MARKDOWN
             )
-            await context.bot.send_message(user_id, "پرداخت شما تأیید شد! ثبت‌نام با موفقیت انجام شد.")
-        except sqlite3.IntegrityError:
-            await query.edit_message_caption("این کاربر قبلاً ثبت‌نام شده است.")
-    
+            await context.bot.send_message(
+                user_id,
+                f"پرداخت شما تأیید شد!\n"
+                f"ثبت‌نام در **{event_title}** با موفقیت انجام شد.\n"
+                f"موفق باشی!",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error(f"Confirm payment failed: {e}")
+            await query.edit_message_caption("خطا در تأیید پرداخت.")
+
+    # --- 2. دکمه نامشخص ---
     elif action == "unclear":
         await query.edit_message_caption(
             caption=f"رسید نامشخص\n"
@@ -840,19 +862,33 @@ async def confirm_payment_action(update: Update, context: ContextTypes.DEFAULT_T
                     f"لطفاً رسید واضح‌تری ارسال کنید.",
             parse_mode=ParseMode.MARKDOWN
         )
-        await context.bot.send_message(user_id, "رسید شما نامشخص است. لطفاً رسید واضح‌تری ارسال کنید.")
-    
-    elif action == "cancel":
-        await query.edit_message_caption(
-            caption=f"رسید لغو شد\n"
-                    f"کاربر: **{full_name}**\n"
-                    f"پرداخت نامعتبر بود.",
+        await context.bot.send_message(
+            user_id,
+            "رسید شما نامشخص است.\n"
+            "لطفاً **تصویر واضح‌تری از رسید** ارسال کنید.\n"
+            "منتظر رسید جدید شما هستیم...",
             parse_mode=ParseMode.MARKDOWN
         )
-        await context.bot.send_message(user_id, "پرداخت شما تأیید نشد. در صورت خطا با پشتیبانی تماس بگیرید.")
-    
-    
-    context.user_data.pop("pending_event_id", None)
+        # مهم: pending_event_id رو پاک نکن! کاربر دوباره رسید بفرسته
+
+    # --- 3. دکمه لغو ---
+    elif action == "cancel":
+        # حذف ثبت‌نام موقت (pending)
+        c.execute("DELETE FROM registrations WHERE event_id = ? AND user_id = ? AND status = 'pending'", (event_id, user_id))
+        conn.commit()
+
+        await query.edit_message_caption(
+            caption=f"پرداخت لغو شد\n"
+                    f"کاربر: **{full_name}**\n"
+                    f"رسید نامعتبر بود.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await context.bot.send_message(
+            user_id,
+            "رسید شما تأیید نشد.\n"
+            "در صورت خطا، دوباره ثبت‌نام کنید یا با پشتیبانی تماس بگیرید."
+        )
+        context.user_data.pop("pending_event_id", None)
 
 
 async def deactivate_event(event_id: int, reason: str, context: ContextTypes.DEFAULT_TYPE) -> None:
