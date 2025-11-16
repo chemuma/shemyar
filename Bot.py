@@ -672,7 +672,13 @@ async def register_event_logic(user_id: int, event_id: int, context: ContextType
 
         # رویداد پولی
         pending = get_pending_count(event_id)
-        remaining = event[5] - event[6]
+        capacity = event[5]
+        current = event[6]
+
+        if capacity == 0:
+            remaining = 50
+        else:
+            remaining = capacity - current
 
         c.execute("SELECT COUNT(*) FROM waitlist WHERE event_id = ?", (event_id,))
         waitlist_cnt = c.fetchone()[0]
@@ -738,26 +744,54 @@ async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_T
         c = conn.cursor()
         c.execute("SELECT title, cost FROM events WHERE event_id = ?", (event_id,))
         event = c.fetchone()
+        if not event:
+            await update.message.reply_text("رویداد یافت نشد!")
+            return
 
-    # فوروارد رسید به گروه اپراتورها
-    sent = await update.message.forward(OPERATOR_GROUP_ID)
+    # اگر عکس یا ویدیو باشه
+    file_id = None
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+    elif update.message.document:  # اگر PDF یا فایل باشه
+        file_id = update.message.document.file_id
+        await update.message.reply_text("رسید شما دریافت شد ✅ در حال بررسی توسط اپراتورها...")
+        # برای داکیومنت هم می‌تونی send_document کنی
+        sent = await context.bot.send_document(
+            chat_id=OPERATOR_GROUP_ID,
+            document=file_id,
+            caption=f"رسید پرداخت کاربر {user_id}\nرویداد: {event[0]}\nمبلغ: {event[1]:,} تومان",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ تایید", callback_data=f"confirm_payment_{event_id}_{user_id}"),
+                    InlineKeyboardButton("❓ نامشخص", callback_data=f"unclear_payment_{event_id}_{user_id}"),
+                    InlineKeyboardButton("✖ لغو", callback_data=f"cancel_payment_{event_id}_{user_id}")
+                ]
+            ])
+        )
+        return
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ تایید", callback_data=f"confirm_payment_{event_id}_{user_id}_{sent.message_id}"),
-            InlineKeyboardButton("❓ نامشخص", callback_data=f"unclear_payment_{event_id}_{user_id}_{sent.message_id}"),
-            InlineKeyboardButton("✖ لغو", callback_data=f"cancel_payment_{event_id}_{user_id}_{sent.message_id}")
-        ]
-    ])
+    if not file_id:
+        await update.message.reply_text("لطفاً فقط تصویر رسید ارسال کنید.")
+        return
 
-    await context.bot.edit_message_caption(
+    # ارسال عکس رسید به گروه اپراتورها با دکمه‌ها
+    sent = await context.bot.send_photo(
         chat_id=OPERATOR_GROUP_ID,
-        message_id=sent.message_id,
+        photo=file_id,
         caption=f"رسید پرداخت کاربر {user_id}\nرویداد: {event[0]}\nمبلغ: {event[1]:,} تومان",
-        reply_markup=keyboard
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ تایید", callback_data=f"confirm_payment_{event_id}_{user_id}"),
+                InlineKeyboardButton("❓ نامشخص", callback_data=f"unclear_payment_{event_id}_{user_id}"),
+                InlineKeyboardButton("✖ لغو", callback_data=f"cancel_payment_{event_id}_{user_id}")
+            ]
+        ])
     )
 
-    await update.message.reply_text("رسید شما دریافت شد ✅ در حال بررسی توسط اپراتورها...")
+    # پیام به کاربر
+    await update.message.reply_text("رسید شما دریافت شد ✅\nدر حال بررسی توسط اپراتورها... لطفاً صبر کنید.")
+
+    # اختیاری: ذخیره message_id اگر نیاز داری بعداً ویرایش کنی
 
 async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
