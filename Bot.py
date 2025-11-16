@@ -724,104 +724,6 @@ async def final_register_from_announce(update: Update, context: ContextTypes.DEF
     return ConversationHandler.END
 
 
-async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    parts = data.split("_")
-    action = parts[0]
-    event_id = int(parts[1])
-    user_id = int(parts[2])
-    message_id = query.message.message_id
-
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
-        event = c.fetchone()
-        if not event:
-            await query.edit_message_caption(caption="رویداد یافت نشد! 🚫")
-            return
-
-    if action == "confirm_payment":
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute(
-                "INSERT INTO payments (user_id, event_id, amount, confirmed_at) VALUES (?, ?, ?, ?)",
-                (user_id, event_id, event[10], datetime.now().isoformat())
-            )
-            c.execute("UPDATE operator_messages SET message_type = 'confirmed' WHERE message_id = ?", (message_id,))
-            conn.commit()
-            await context.bot.send_message(
-               user_id,
-               "پرداخت شما با موفقیت تایید شد!✅ به امید دیدار در رویداد."
-           )
-            await query.edit_message_caption(caption="پرداخت تایید شد✅")
-
-           # --- مرحله 4: اطلاع به نفر اول لیست انتظار ---
-        with sqlite3.connect(DB_PATH) as conn:
-               c = conn.cursor()
-               c.execute("SELECT title FROM events WHERE event_id = ?", (event_id,))
-               event_title = c.fetchone()[0]
-
-               c.execute("""
-                   SELECT user_id FROM waitlist 
-                   WHERE event_id = ? 
-                   ORDER BY added_at ASC 
-                   LIMIT 1
-               """, (event_id,))
-               next_user = c.fetchone()
-
-               if next_user:
-                   next_user_id = next_user[0]
-                   c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (next_user_id, event_id))
-                   conn.commit()
-
-                   try:
-                       await context.bot.send_message(
-                           next_user_id,
-                           f"ظرفیت آزاد شد🤩!\n\n"
-                           f"لطفاً برای ثبت‌نام در **{event_title}**، مبلغ را واریز کنید و **رسید** را ارسال کنید.\n"
-                           f"شماره کارت: `{CARD_NUMBER}`",
-                           parse_mode="Markdown"
-                       )
-                   except Exception as e:
-                       logger.warning(f"Failed to notify waitlist user {next_user_id}: {e}")
-    elif action == "unclear_payment":
-        await context.bot.send_message(
-            user_id,
-            "رسید پرداخت شما نامشخص است. لطفاً رسید واضح‌تری ارسال کنید. ❓"
-        )
-        await query.edit_message_caption(caption="رسید نامشخص ❓")
-        with sqlite3.connect(DB_PATH) as conn:
-               c = conn.cursor()
-               c.execute("UPDATE operator_messages SET message_type = 'unclear' WHERE message_id = ?", (message_id,))
-               conn.commit()
-
-           # --- مرحله 5: حذف از لیست انتظار (اگر بود) ---
-        with sqlite3.connect(DB_PATH) as conn:
-               c = conn.cursor()
-               c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-               conn.commit()
-    elif action == "cancel_payment":
-        await query.edit_message_caption(caption="پرداخت لغو شد")
-        with sqlite3.connect(DB_PATH) as conn:
-               c = conn.cursor()
-               c.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-               c.execute("UPDATE events SET current_capacity = current_capacity - 1 WHERE event_id = ?", (event_id,))
-               c.execute("UPDATE operator_messages SET message_type = 'cancelled' WHERE message_id = ?", (message_id,))
-               conn.commit()
-
-           # --- مرحله 5: حذف از لیست انتظار ---
-        with sqlite3.connect(DB_PATH) as conn:
-               c = conn.cursor()
-               c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-               conn.commit()
-        await context.bot.send_message(
-            user_id,
-            "ثبت‌نام شما لغو شد. ❌\nدر صورت نیاز، دوباره ثبت‌نام کنید."
-        )
-        await query.edit_message_caption(caption="پرداخت لغو شد ❌")
-
 async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if "pending_event_id" not in context.user_data:
         await update.message.reply_text("ابتدا باید در یک رویداد پولی ثبت‌نام کنید.")
@@ -1194,7 +1096,7 @@ async def final_register_from_announce(update: Update, context: ContextTypes.DEF
 
     user_id = update.effective_user.id
     await query.edit_message_text("در حال ثبت‌نام...")
-    await register_event_logic(user_id, event_id, context, from_announce=True)
+    await register_event_logic(user_id, event_id, context)
     del context.user_data["announce_event_id"]
     return ConversationHandler.END
 
@@ -1332,7 +1234,7 @@ async def save_edited_event(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 "هشتگ: #[هشتگ]\n"
                 "توضیحات: [توضیحات]\n"
                 "هزینه: [هزینه یا رایگان]\n"
-                "تاریخ: [YYYY-MM-DD]\n"
+                "تاریخ: [YYYY/MM/DD]\n"
                 "محل: [محل]\n"
                 "ظرفیت: [ظرفیت یا نامحدود]"
             )
@@ -1720,9 +1622,7 @@ async def confirm_manual_registration(update: Update, context: ContextTypes.DEFA
         await context.bot.send_message(
             user_id,
             f"سلام {full_name}!\n\n"
-            f"شما توسط ادمین در رویداد ثبت‌نام شدید.\n"
-            f"یادآوری روز قبل رویداد برای شما **فعال شد**.\n"
-            f"جزئیات بیشتر به زودی ارسال می‌شود.",
+            f"شما توسط ادمین در رویداد ثبت‌نام شدید.\n",
             parse_mode=ParseMode.MARKDOWN
         )
     except:
@@ -2221,24 +2121,6 @@ async def my_event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
-async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    event_id = int(query.data.split("_")[2])
-    user_id = update.effective_user.id
-
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT is_active FROM events WHERE event_id = ?", (event_id,))
-        if not c.fetchone()[0]:
-            await query.edit_message_text("این رویداد دیگر فعال نیست و قابل انصراف نمی‌باشد.")
-            return
-        c.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-        c.execute("UPDATE events SET current_capacity = current_capacity - 1 WHERE event_id = ?", (event_id,))
-        conn.commit()
-
-    await query.edit_message_text("ثبت‌نام شما با موفقیت لغو شد ✅", 
-                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_myprofile")]]))
 
 async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
