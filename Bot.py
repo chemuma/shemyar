@@ -696,11 +696,12 @@ async def register_event_logic(user_id: int, event_id: int, context: ContextType
         context.user_data["pending_event_id"] = event_id
         await context.bot.send_message(
             user_id,
-            f"برای ثبت‌نام در **{event[1]}** مبلغ **{event[10]:,} تومان** را به کارت زیر واریز کنید:\n`{CARD_NUMBER}`\n\n"
-            f"لطفاً **تصویر رسید** را ارسال کنید.\n"
-            f"ظرفیت موقت باقی‌مانده: {remaining - pending} نفر",
+            f"لطفاً مبلغ **{event[10]:,} تومان** را به کارت زیر واریز کنید:\n\n"
+            f"`{CARD_NUMBER}`\n\n"
+            f"سپس **تصویر رسید** را دقیقاً در همین چت ارسال کنید.\n"
+            f"ظرفیت موقت: {remaining - pending} نفر",
             parse_mode=ParseMode.MARKDOWN
-        )
+)
 async def final_register_from_announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -1082,23 +1083,25 @@ async def register_from_announce_confirm(update: Update, context: ContextTypes.D
     )
     return CONFIRM_REG_FROM_ANNOUNCE
 
-async def final_register_from_announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def final_register_from_announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+
     if query.data == "cancel_reg_announce":
         await query.edit_message_text("ثبت‌نام لغو شد.")
-        return ConversationHandler.END
+        return
 
-    event_id = context.user_data.get("announce_event_id")
-    if not event_id:
-        await query.edit_message_text("خطا: رویداد پیدا نشد.")
-        return ConversationHandler.END
-
+    event_id = int(query.data.split("_")[2])
     user_id = update.effective_user.id
-    await query.edit_message_text("در حال ثبت‌نام...")
-    await register_event_logic(user_id, event_id, context)
-    del context.user_data["announce_event_id"]
-    return ConversationHandler.END
+
+    msg = await query.edit_message_text("در حال ثبت‌نام... لطفاً صبر کنید")
+
+    try:
+        await register_event_logic(user_id, event_id, context)
+        await msg.delete()
+    except Exception as e:
+        logger.error(f"Register failed: {e}")
+        await msg.edit_text("خطا در ثبت‌نام. لطفاً دوباره تلاش کنید.")
 
 async def send_attendance_reminder(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
@@ -2242,15 +2245,6 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
         per_message=False
     )
-    # ConversationHandler برای announce_reg_conv
-    announce_reg_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(register_from_announce_confirm, pattern="^register_")],
-        states={
-            CONFIRM_REG_FROM_ANNOUNCE: [CallbackQueryHandler(final_register_from_announce, pattern="^(final_reg_|cancel_reg_announce)")],
-        },
-        fallbacks=[],
-        per_message=True
-    )
     
     # ConversationHandler برای manage_admins_conv
     manage_admins_conv = ConversationHandler(
@@ -2339,6 +2333,8 @@ def main():
     app.add_handler(CallbackQueryHandler(register_event, pattern="^register_"))
     app.add_handler(CallbackQueryHandler(payment_action, pattern="^(confirm_payment_|unclear_payment_|cancel_payment_)"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_payment_receipt))
+    app.add_handler(CallbackQueryHandler(register_from_announce_confirm, pattern="^register_"))
+    app.add_handler(CallbackQueryHandler(final_register_from_announce, pattern="^(final_reg_|cancel_reg_announce)"))
     app.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
     app.add_handler(CallbackQueryHandler(show_events, pattern="^back_to_events$"))
     app.add_handler(CallbackQueryHandler(handle_rating, pattern="^rate_"))
