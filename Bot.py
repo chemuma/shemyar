@@ -748,130 +748,112 @@ async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text("رویداد یافت نشد!")
             return
 
-    # اگر عکس یا ویدیو باشه
+        c.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
+        user_row = c.fetchone()
+        full_name = user_row[0] if user_row else f"کاربر {user_id}"
+
     file_id = None
     if update.message.photo:
         file_id = update.message.photo[-1].file_id
-    elif update.message.document:  # اگر PDF یا فایل باشه
+    elif update.message.document:
         file_id = update.message.document.file_id
-        await update.message.reply_text("رسید شما دریافت شد ✅ در حال بررسی توسط اپراتورها...")
-        # برای داکیومنت هم می‌تونی send_document کنی
-        sent = await context.bot.send_document(
+        await update.message.reply_text("رسید شما دریافت شد در حال بررسی...")
+        await context.bot.send_document(
             chat_id=OPERATOR_GROUP_ID,
             document=file_id,
-            caption=f"رسید پرداخت کاربر {user_id}\nرویداد: {event[0]}\nمبلغ: {event[1]:,} تومان",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ تایید", callback_data=f"confirm_payment_{event_id}_{user_id}"),
-                    InlineKeyboardButton("❓ نامشخص", callback_data=f"unclear_payment_{event_id}_{user_id}"),
-                    InlineKeyboardButton("✖ لغو", callback_data=f"cancel_payment_{event_id}_{user_id}")
-                ]
-            ])
+            caption=f"رسید پرداخت از: **{full_name}**\n"
+                    f"آیدی: `{user_id}`\n"
+                    f"رویداد: {event[0]}\n"
+                    f"مبلغ: {event[1]:,} تومان",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("تایید", callback_data=f"confirm_payment_{event_id}_{user_id}"),
+                InlineKeyboardButton("نامشخص", callback_data=f"unclear_payment_{event_id}_{user_id}"),
+                InlineKeyboardButton("لغو", callback_data=f"cancel_payment_{event_id}_{user_id}")
+            ]])
         )
         return
 
     if not file_id:
-        await update.message.reply_text("لطفاً فقط تصویر رسید ارسال کنید.")
+        await update.message.reply_text("لطفاً فقط تصویر یا فایل رسید ارسال کنید.")
         return
 
-    # ارسال عکس رسید به گروه اپراتورها با دکمه‌ها
-    sent = await context.bot.send_photo(
+    await context.bot.send_photo(
         chat_id=OPERATOR_GROUP_ID,
         photo=file_id,
-        caption=f"رسید پرداخت کاربر {user_id}\nرویداد: {event[0]}\nمبلغ: {event[1]:,} تومان",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ تایید", callback_data=f"confirm_payment_{event_id}_{user_id}"),
-                InlineKeyboardButton("❓ نامشخص", callback_data=f"unclear_payment_{event_id}_{user_id}"),
-                InlineKeyboardButton("✖ لغو", callback_data=f"cancel_payment_{event_id}_{user_id}")
-            ]
-        ])
+        caption=f"رسید پرداخت از: **{full_name}**\n"
+                f"آیدی: `{user_id}`\n"
+                f"رویداد: {event[0]}\n"
+                f"مبلغ: {event[1]:,} تومان",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("تایید", callback_data=f"confirm_payment_{event_id}_{user_id}"),
+            InlineKeyboardButton("نامشخص", callback_data=f"unclear_payment_{event_id}_{user_id}"),
+            InlineKeyboardButton("لغو", callback_data=f"cancel_payment_{event_id}_{user_id}")
+        ]])
     )
 
-    # پیام به کاربر
-    await update.message.reply_text("رسید شما دریافت شد ✅\nدر حال بررسی توسط اپراتورها... لطفاً صبر کنید.")
+    await update.message.reply_text("رسید شما دریافت شد\nدر حال بررسی توسط اپراتورها... لطفاً صبر کنید.")
 
-    # اختیاری: ذخیره message_id اگر نیاز داری بعداً ویرایش کنی
 
-async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def confirm_payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
 
-    data = query.data
-    parts = data.split("_")
-    action = parts[0] + "_" + parts[1]          # confirm_payment / unclear_payment / cancel_payment
-    event_id = int(parts[2])
-    user_id = int(parts[3])
-    receipt_message_id = int(parts[4])
+    data = query.data.split("_")
+    action = data[0]  # confirm / unclear / cancel
+    event_id = int(data[2])
+    user_id = int(data[3])
 
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
-        c.execute("SELECT title, cost, type, hashtag FROM events WHERE event_id = ?", (event_id,))
-        event = c.fetchone()
+        c.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
+        user = c.fetchone()
+        full_name = user[0] if user else "کاربر"
 
-    if action == "confirm_payment":
-        # ثبت پرداخت و تکمیل ثبت‌نام واقعی
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("INSERT INTO payments (user_id, event_id, amount, confirmed_at) VALUES (?, ?, ?, ?)",
-                      (user_id, event_id, event[1], datetime.now().isoformat()))
+        c.execute("SELECT title FROM events WHERE event_id = ?", (event_id,))
+        event_title = c.fetchone()[0]
+
+    if action == "confirm":
+        # ثبت‌نام نهایی
+        try:
+            c.execute("INSERT INTO registrations (event_id, user_id, status) VALUES (?, ?, 'confirmed')",
+                      (event_id, user_id))
             c.execute("UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?", (event_id,))
-            # ارسال پیام ثبت‌نام به گروه اپراتورها
-            c.execute("SELECT full_name, national_id, student_id, phone FROM users WHERE user_id = ?", (user_id,))
-            u = c.fetchone()
-            c.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,))
-            order = c.fetchone()[0]
             conn.commit()
 
-        hashtag = f"#{event[2]} #{event[3].replace(' ', '_')}"
-        reg_text = f"{hashtag}\n{order}:\nنام: {u[0]}\nکد ملی: {u[1]}\nشماره دانشجویی: {u[2]}\nتلفن: {u[3]}"
-        await context.bot.send_message(OPERATOR_GROUP_ID, reg_text)
+            await query.edit_message_caption(
+                caption=f"رسید تأیید شد\n"
+                        f"کاربر: **{full_name}**\n"
+                        f"رویداد: {event_title}\n"
+                        f"وضعیت: ثبت‌نام کامل شد",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            await context.bot.send_message(user_id, "پرداخت شما تأیید شد! ثبت‌نام با موفقیت انجام شد.")
+        except sqlite3.IntegrityError:
+            await query.edit_message_caption("این کاربر قبلاً ثبت‌نام شده است.")
+    
+    elif action == "unclear":
+        await query.edit_message_caption(
+            caption=f"رسید نامشخص\n"
+                    f"کاربر: **{full_name}**\n"
+                    f"لطفاً رسید واضح‌تری ارسال کنید.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await context.bot.send_message(user_id, "رسید شما نامشخص است. لطفاً رسید واضح‌تری ارسال کنید.")
+    
+    elif action == "cancel":
+        await query.edit_message_caption(
+            caption=f"رسید لغو شد\n"
+                    f"کاربر: **{full_name}**\n"
+                    f"پرداخت نامعتبر بود.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await context.bot.send_message(user_id, "پرداخت شما تأیید نشد. در صورت خطا با پشتیبانی تماس بگیرید.")
+    
+    
+    context.user_data.pop("pending_event_id", None)
 
-        await context.bot.send_message(user_id, "پرداخت شما تأیید شد ✅\nثبت‌نام با موفقیت انجام شد. به امید دیدار!")
-        await query.edit_message_caption(caption="پرداخت تأیید شد ✅")
-
-        # اطلاع به نفر اول لیست انتظار
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT user_id FROM waitlist WHERE event_id = ? ORDER BY added_at LIMIT 1", (event_id,))
-            row = c.fetchone()
-            if row:
-                next_user = row[0]
-                c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (next_user, event_id))
-                conn.commit()
-                await context.bot.send_message(
-                    next_user,
-                    f"ظرفیت آزاد شد! 🤩\nلطفاً برای {event[0]} مبلغ {event[1]:,} تومان را واریز کرده و رسید را بفرستید.\n"
-                    f"شماره کارت: `{CARD_NUMBER}`",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-
-        # چک تکمیل ظرفیت
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT current_capacity, capacity, type FROM events WHERE event_id = ?", (event_id,))
-            cur, cap, typ = c.fetchone()
-            if typ == "بازدید" and cur >= cap:
-                await deactivate_event(event_id, "تکمیل ظرفیت", context)
-
-    elif action == "unclear_payment":
-        await context.bot.send_message(user_id, "رسید نامشخص است ❌ لطفاً رسید واضح‌تری بفرستید.")
-        await query.edit_message_caption(caption="رسید نامشخص ❓")
-        # حذف ثبت‌نام موقت
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-            c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-            conn.commit()
-
-    elif action == "cancel_payment":
-        await context.bot.send_message(user_id, "پرداخت لغو شد ❌ می‌توانید دوباره اقدام کنید.")
-        await query.edit_message_caption(caption="پرداخت لغو شد ✖")
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-            c.execute("DELETE FROM waitlist WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-            conn.commit()
 
 async def deactivate_event(event_id: int, reason: str, context: ContextTypes.DEFAULT_TYPE) -> None:
     with sqlite3.connect(DB_PATH) as conn:
@@ -2365,7 +2347,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^(بازگشت 🔙)$"), back_to_main))
     app.add_handler(CallbackQueryHandler(event_details, pattern="^event_"))
     app.add_handler(CallbackQueryHandler(register_event, pattern="^register_"))
-    app.add_handler(CallbackQueryHandler(payment_action, pattern="^(confirm_payment_|unclear_payment_|cancel_payment_)"))
+    app.add_handler(CallbackQueryHandler(confirm_payment_action, pattern="^(confirm|unclear|cancel)_payment_"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_payment_receipt))
     app.add_handler(CallbackQueryHandler(register_from_announce_confirm, pattern="^register_"))
     app.add_handler(CallbackQueryHandler(final_register_from_announce, pattern="^(final_reg_|cancel_reg_announce)"))
