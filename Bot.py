@@ -209,6 +209,24 @@ def get_admin_menu() -> ReplyKeyboardMarkup:
         ["بازگشت 🔙"]
     ], resize_keyboard=True)
 
+def migrate_database():
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        try:
+            # اضافه کردن ستون status اگر وجود نداشته باشه
+            c.execute("ALTER TABLE registrations ADD COLUMN status TEXT DEFAULT 'confirmed'")
+            conn.commit()
+            logger.info("Database migrated: added 'status' column to registrations")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                logger.error(f"Migration failed: {e}")
+
+        # آپدیت همه ثبت‌نام‌های قبلی به confirmed
+        c.execute("UPDATE registrations SET status = 'confirmed' WHERE status IS NULL")
+        conn.commit()
+
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     if not await check_channel_membership(update, context):
@@ -696,14 +714,19 @@ async def register_event_logic(user_id: int, event_id: int, context: ContextType
                 parse_mode=ParseMode.MARKDOWN
             )
             return
+
         c.execute("SELECT 1 FROM registrations WHERE event_id = ? AND user_id = ? AND status = 'pending'", (event_id, user_id))
         if c.fetchone():
             await context.bot.send_message(user_id, "شما قبلاً رسید ارسال کرده‌اید. منتظر تأیید اپراتور باشید.")
             return
-        c.execute("INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
-                  (user_id, event_id, datetime.now().isoformat()))
+
+        c.execute("""
+            INSERT INTO registrations (event_id, user_id, status) 
+            VALUES (?, ?, 'pending')
+        """, (event_id, user_id))
         conn.commit()
         context.user_data["pending_event_id"] = event_id
+        
         await context.bot.send_message(
             user_id,
             f"لطفاً مبلغ **{event[10]:,} تومان** را به کارت زیر واریز کنید:\n\n"
@@ -821,13 +844,12 @@ async def confirm_payment_action(update: Update, context: ContextTypes.DEFAULT_T
     # --- 1. دکمه تأیید ---
     if action == "confirm":
         try:
-            # آپدیت status از pending به confirmed
             c.execute("""
                 UPDATE registrations 
                 SET status = 'confirmed' 
                 WHERE event_id = ? AND user_id = ? AND status = 'pending'
             """, (event_id, user_id))
-            
+
             if c.rowcount == 0:
                 await query.edit_message_caption("این کاربر قبلاً تأیید شده یا ثبت‌نام نشده.")
                 return
@@ -2204,13 +2226,15 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     ]))
 
 
-
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.job_queue.run_repeating(send_rating_average, interval=3600, first=60)
     app.job_queue.run_repeating(send_attendance_reminder, interval=300, first=10)
+
+    migrate_database() 
+    
     # ConversationHandler برای profile_conv
     profile_conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
