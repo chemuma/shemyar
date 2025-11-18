@@ -888,7 +888,7 @@ async def confirm_payment_action(update: Update, context: ContextTypes.DEFAULT_T
                 f"کد ملی: {national_id}\n"
                 f"شماره دانشجویی: {student_id}\n"
                 f"تلفن: {phone}"
-        )
+            )
 
         # ویرایش کپشن رسید
         await query.edit_message_caption(
