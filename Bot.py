@@ -890,28 +890,28 @@ async def confirm_payment_action(update: Update, context: ContextTypes.DEFAULT_T
                 f"تلفن: {phone}"
             )
 
-        # ویرایش کپشن رسید
-        await query.edit_message_caption(
-            caption=message,
-            parse_mode=ParseMode.MARKDOWN
-        )
+            # ویرایش کپشن رسید
+            await query.edit_message_caption(
+                caption=message,
+                parse_mode=ParseMode.MARKDOWN
+            )
 
-        # پیام به کاربر
-        await context.bot.send_message(
-            user_id,
-            f"پرداخت شما تأیید شد!\n"
-            f"ثبت‌نام در **{event_title}** با موفقیت انجام شد.\n"
-            f"موفق باشی!",
-            parse_mode=ParseMode.MARKDOWN
-        )
+            # پیام به کاربر
+            await context.bot.send_message(
+                user_id,
+                f"پرداخت شما تأیید شد!\n"
+                f"ثبت‌نام در **{event_title}** با موفقیت انجام شد.\n"
+                f"موفق باشی!",
+                parse_mode=ParseMode.MARKDOWN
+            )
 
-        # افزایش ظرفیت
-        c.execute("UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?", (event_id,))
-        conn.commit()
+            # افزایش ظرفیت
+            c.execute("UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?", (event_id,))
+            conn.commit()
 
-    except Exception as e:
-        logger.error(f"Confirm payment failed: {e}")
-        await query.edit_message_caption("خطا در تأیید پرداخت.")
+        except Exception as e:
+            logger.error(f"Confirm payment failed: {e}")
+            await query.edit_message_caption("خطا در تأیید پرداخت.")
 
     # --- 2. دکمه نامشخص ---
     elif action == "unclear":
