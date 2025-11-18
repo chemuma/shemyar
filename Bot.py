@@ -149,7 +149,15 @@ SEND_RATING_EVENT = 0
 PHOTO_UPLOAD_CONFIRM, PHOTO_UPLOAD = range(2)
 CONFIRM_REG_FROM_ANNOUNCE = 0
 
-# Utility functions
+def shamsi_to_gregorian(shamsi: str) -> datetime:
+    y, m, d = map(int, shamsi.split('/'))
+    gy = y + 621
+    return datetime(gy, m, d)
+
+def gregorian_to_shamsi(dt: datetime) -> str:
+    gy = dt.year - 621
+    return f"{gy}/{dt.month:02d}/{dt.day:02d}"
+
 def validate_national_id(national_id: str) -> bool:
     if not re.match(r"^\d{10}$", national_id):
         return False
@@ -671,7 +679,7 @@ async def register_event_logic(user_id: int, event_id: int, context: ContextType
             conn.commit()
 
             # event[9] = hashtag, event[2] = type
-            hashtag = f"#{event[2]} #{event[9].replace(' ', '_')}" if event[9] else f"#{event[2]}"
+            hashtag = f"#{event[2]} {event[9].replace(' ', '_')}" if event[9] else f"#{event[2]}"
             text = f"{hashtag}\n{order}:\nنام: {user[0]}\nکد ملی: {user[1]}\nشماره دانشجویی: {user[2]}\nتلفن: {user[3]}"
             msg = await context.bot.send_message(OPERATOR_GROUP_ID, text)
             c.execute("INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) "
@@ -833,48 +841,77 @@ async def confirm_payment_action(update: Update, context: ContextTypes.DEFAULT_T
 
     # دریافت اطلاعات
     with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
-        user = c.fetchone()
-        full_name = user[0] if user else "کاربر"
+        c.execute("SELECT u.full_name, u.national_id, u.student_id, u.phone, e.type, e.hashtag, e.title "
+                  "FROM users u JOIN events e ON e.event_id = ? WHERE u.user_id = ?", (event_id, user_id))
+        user_data = c.fetchone()
 
-        c.execute("SELECT title FROM events WHERE event_id = ?", (event_id,))
-        event_title = c.fetchone()[0]
+        full_name, nat_id, stu_id, phone, typ, hashtag, title = user_data
 
-    # --- 1. دکمه تأیید ---
+        order_num = c.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,)).fetchone()[0]
+
+        msg = (
+            f"#{typ} #{hashtag.replace(' ', '_')}\n"
+            f"{order_num}:\n"
+            f"نام: {full_name}\n"
+            f"کد ملی: {nat_id}\n"
+            f"شماره دانشجویی: {stu_id}\n"
+            f"تلفن: {phone}"
+        )
+
+        await query.edit_message_caption(caption=msg)
+
+    # --- 1. دکمه تأیید --
     if action == "confirm":
         try:
+            # دریافت اطلاعات کامل کاربر
             c.execute("""
-                UPDATE registrations 
-                SET status = 'confirmed' 
-                WHERE event_id = ? AND user_id = ? AND status = 'pending'
+                SELECT u.full_name, u.national_id, u.student_id, u.phone, e.hashtag, e.type
+                FROM users u
+                JOIN events e ON e.event_id = ?
+                WHERE u.user_id = ?
             """, (event_id, user_id))
-
-            if c.rowcount == 0:
-                await query.edit_message_caption("این کاربر قبلاً تأیید شده یا ثبت‌نام نشده.")
+            user_info = c.fetchone()
+            if not user_info:
+                await query.edit_message_caption("خطا: اطلاعات کاربر یافت نشد.")
                 return
 
-            # افزایش ظرفیت
-            c.execute("UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?", (event_id,))
-            conn.commit()
+            full_name, national_id, student_id, phone, hashtag, event_type = user_info
 
-            await query.edit_message_caption(
-                caption=f"پرداخت تأیید شد\n"
-                        f"کاربر: **{full_name}**\n"
-                        f"رویداد: {event_title}\n"
-                        f"وضعیت: **ثبت‌نام کامل شد**",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            await context.bot.send_message(
-                user_id,
-                f"پرداخت شما تأیید شد!\n"
-                f"ثبت‌نام در **{event_title}** با موفقیت انجام شد.\n"
-                f"موفق باشی!",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except Exception as e:
-            logger.error(f"Confirm payment failed: {e}")
-            await query.edit_message_caption("خطا در تأیید پرداخت.")
+            # هشتگ‌ها
+            hashtags = f"#{event_type.replace(' ', '_')} {hashtag.replace(' ', '_')}"
+    
+            # پیام کامل
+            message = (
+                f"{hashtags}\n"
+                f"{order}:\n"
+                f"نام: {full_name}\n"
+                f"کد ملی: {national_id}\n"
+                f"شماره دانشجویی: {student_id}\n"
+                f"تلفن: {phone}"
+        )
+
+        # ویرایش کپشن رسید
+        await query.edit_message_caption(
+            caption=message,
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+        # پیام به کاربر
+        await context.bot.send_message(
+            user_id,
+            f"پرداخت شما تأیید شد!\n"
+            f"ثبت‌نام در **{event_title}** با موفقیت انجام شد.\n"
+            f"موفق باشی!",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+        # افزایش ظرفیت
+        c.execute("UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?", (event_id,))
+        conn.commit()
+
+    except Exception as e:
+        logger.error(f"Confirm payment failed: {e}")
+        await query.edit_message_caption("خطا در تأیید پرداخت.")
 
     # --- 2. دکمه نامشخص ---
     elif action == "unclear":
@@ -1800,32 +1837,40 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif period == "month":
             start = now - timedelta(days=30)
         else:
-            start = datetime(1402, 1, 1)
+            start = datetime(1400, 1, 1)  # همه
 
         with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
-            c.execute("""SELECT e.title, e.type, u.full_name, u.national_id, p.amount, p.confirmed_at
-                         FROM payments p
-                         JOIN events e ON p.event_id = e.event_id
-                         JOIN users u ON p.user_id = u.user_id
-                         WHERE p.confirmed_at >= ?
-                         ORDER BY p.confirmed_at DESC""", (start.isoformat(),))
+            c.execute("""
+                SELECT e.title, u.full_name, u.national_id, p.amount, p.confirmed_at
+                FROM payments p
+                JOIN events e ON p.event_id = e.event_id
+                JOIN users u ON p.user_id = u.user_id
+                WHERE p.confirmed_at >= ?
+                ORDER BY p.confirmed_at DESC
+            """, (start.isoformat(),))
             rows = c.fetchall()
+
+            total = sum(row[3] for row in rows)
 
         if not rows:
             await query.edit_message_text("در این بازه زمانی پرداختی ثبت نشده است.")
-            return ConversationHandler.END
+            return
 
-        text = "گزارش مالی 💰\n\n"
-        total = 0
-        for row in rows:
-            text += (f"رویداد: {row[0]} ({row[1]})\n"
-                     f"نام: {row[2]}\n"
-                     f"کد ملی: {row[3]}\n"
-                     f"مبلغ: {row[4]:,} تومان\n"
-                     f"تاریخ تأیید: {row[5][:10]}\n{'─'*20}\n")
-            total += row[4]
-        text += f"\nجمع کل: {total:,} تومان"
+        if period == "all":
+            text = f"گزارش مالی کل\n\nجمع درآمد: {total:,} تومان\nتعداد پرداخت: {len(rows)}"
+        else:
+            text = "گزارش مالی\n\n"
+            for row in rows:
+                text += (
+                    f"رویداد: {row[0]}\n"
+                    f"نام: {row[1]}\n"
+                    f"کد ملی: {row[2]}\n"
+                    f"مبلغ: {row[3]:,} تومان\n"
+                    f"تاریخ: {row[4][:10]}\n{'─'*25}\n"
+                )
+            text += f"\nجمع کل: {total:,} تومان"
+
         await query.edit_message_text(text)
         return ConversationHandler.END
         
@@ -1951,7 +1996,7 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"راستی اگه از این رویداد عکس یا ویدیو کوتاهی داری، خوشحال میشم برام بفرستی تا بعداً در تولید پوسترها یا ویدیوهای جذاب ازش استفاده کنیم.\n\n"
         f"یادت باشه فقط {MAX_PHOTOS} تا می‌تونی بفرستی!",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("😃آره می‌خوام بفرستم", callback_data=f"upload_photo_{event_id}")],
+            InlineKeyboardButton("آره می‌خوام بفرستم", callback_data="send_photo_yes"),
             [InlineKeyboardButton("😐نه چیزی نمی‌فرستم", callback_data="skip_photo")]
         ])
     )
@@ -1962,12 +2007,17 @@ async def send_rating_average(context: ContextTypes.DEFAULT_TYPE):
         c.execute("""
             SELECT event_id, title, type, hashtag, rating_deadline
             FROM events
-            WHERE rating_sent = 1 AND rating_deadline < ?
+            WHERE rating_sent = 1 AND rating_deadline IS NOT NULL
+              AND rating_deadline < ? AND rating_average_sent = 0
         """, (datetime.now().isoformat(),))
         expired_events = c.fetchall()
 
+    if not expired_events:
+        return
+
     for event in expired_events:
-        event_id = event[0]
+        event_id, title, typ, hashtag, deadline = event
+
         c.execute("SELECT AVG(score), COUNT(*) FROM ratings WHERE event_id = ?", (event_id,))
         avg, count = c.fetchone()
         if avg is None:
@@ -1975,11 +2025,17 @@ async def send_rating_average(context: ContextTypes.DEFAULT_TYPE):
 
         avg = round(avg, 2)
         text = (
-            f"#امتیاز\n"
-            f"کاربران به رویداد #{event[2]} #{event[3].replace(' ', '_')}:\n"
-            f"میانگین: {avg} ⭐ از {count} نفر"
+            f"#امتیاز_نهایی\n"
+            f"رویداد: {title}\n"
+            f"#{typ} #{hashtag.replace(' ', '_')}\n"
+            f"میانگین امتیاز: {avg} ⭐ از {count} نفر\n"
+            f"مهلت: تا {deadline[:16].replace('T', ' ')}"
         )
         await context.bot.send_message(OPERATOR_GROUP_ID, text)
+
+        # علامت بزن که ارسال شده
+        c.execute("UPDATE events SET rating_average_sent = 1 WHERE event_id = ?", (event_id,))
+        conn.commit()
 
 async def start_photo_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -1989,6 +2045,7 @@ async def start_photo_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.message.edit_text("ممنون از شرکتت در نظرسنجی! موفق باشی!")
         return ConversationHandler.END
 
+    if query.data == "send_photo_yes":
     event_id = int(query.data.split("_")[2])
     context.user_data["photo_event_id"] = event_id
     context.user_data["photo_count"] = 0
@@ -2169,7 +2226,11 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def my_event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    event_id = int(query.data.split("_")[1])
+    try:
+    iso_date = shamsi_to_gregorian(date_str)
+    event_date = datetime.fromisoformat(iso_date).date()
+    except:
+    event_date = date_str
     user_id = update.effective_user.id
 
     with sqlite3.connect(DB_PATH) as conn:
@@ -2182,7 +2243,7 @@ async def my_event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     cost_text = "رایگان" if event[10] == 0 else f"{event[10]:,} تومان"
     text = (f"عنوان: {event[1]}\n"
             f"نوع: {event[2]}\n"
-            f"تاریخ: {event[3]}\n"
+            f"تاریخ: {date_str}\n"
             f"محل: {event[4]}\n"
             f"هزینه: {cost_text}\n"
             f"توضیحات: {event[7]}")
@@ -2230,7 +2291,8 @@ def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    app.job_queue.run_repeating(send_rating_average, interval=3600, first=60)
+
+    app.job_queue.run_repeating(send_rating_average, interval=1800, first=60)
     app.job_queue.run_repeating(send_attendance_reminder, interval=300, first=10)
 
     migrate_database() 
@@ -2371,7 +2433,7 @@ def main():
     #ConversationHandler برای photo_upload_conv
     photo_upload_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(start_photo_upload, pattern="^(upload_photo_|skip_photo)$")
+            CallbackQueryHandler(start_photo_upload, pattern="^(send_photo_yes_|skip_photo)$")
         ],
         states={
             PHOTO_UPLOAD: [
