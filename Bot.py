@@ -256,7 +256,7 @@ async def confirm_national_id(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text("لطفاً کد ملی خود را دوباره وارد کنید:")
         await query.message.delete()
         return NATIONAL_ID
-    await query.message.reply_text("(ورورد به صورت مهمان با وارد کردن 000) لطفاً شماره دانشجویی خود را وارد کنید:")
+    await query.message.reply_text("لطفاً شماره دانشجویی خود را وارد کنید:(ورورد به صورت مهمان با وارد کردن 000)")
     await query.message.delete()
     return STUDENT_ID
 
