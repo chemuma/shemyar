@@ -211,7 +211,7 @@ async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def full_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text
     if not re.match(r"^[آ-ی\s]{6,}$", text) or text.count(" ") < 1:
-        await update.message.reply_text("نام کامل باید حداقل 6 کاراکتر با حروف فارسی و شامل یک فاصله باشد. دوباره وارد کنید:")
+        await update.message.reply_text("نام کامل باید حداقل 6 کاراکتر با حروف فارسی و شامل یک فاصله باشد. لطفا نام و نام خانوادگی خود را به طور کامل وارد کنید:")
         return FULL_NAME
     context.user_data["full_name"] = text
     await update.message.reply_text(
@@ -256,7 +256,7 @@ async def confirm_national_id(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text("لطفاً کد ملی خود را دوباره وارد کنید:")
         await query.message.delete()
         return NATIONAL_ID
-    await query.message.reply_text("لطفاً شماره دانشجویی خود را وارد کنید:")
+    await query.message.reply_text("(ورورد به صورت مهمان با وارد کردن 000) لطفاً شماره دانشجویی خود را وارد کنید:")
     await query.message.delete()
     return STUDENT_ID
 
